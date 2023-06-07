@@ -8,3 +8,5 @@ dependencies:
   - matplotlib
   - seaborn
   - pyarrow
+  - pip:
+      - selenium
