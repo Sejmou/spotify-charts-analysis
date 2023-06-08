@@ -6,12 +6,12 @@ from helpers import (
     setup_webdriver_for_download,
     create_data_path,
 )
-from helpers.scraping import charts_already_downloaded
 from datetime import datetime, timedelta
 import argparse
 import multiprocessing
 from tqdm import tqdm
 from itertools import product
+import os
 
 
 def read_lines_from_file(path: str):
@@ -66,7 +66,11 @@ def setup_webdriver(idx, download_path):
 
 def process_chunk_with_progress(idx, driver, chunk: list, download_path: str):
     with tqdm(total=len(chunk), desc=f"driver #{idx + 1}", position=idx + 1) as pbar:
-        for region_code, date_str in chunk:
+        for i, (region_code, date_str) in enumerate(chunk):
+            if i > 0 and i % 128 == 0:
+                # reset webdriver every 128 downloads as for some reason it starts to hang after around this number of downloads
+                driver.quit()
+                driver = setup_webdriver(idx, download_path)
             download_region_chart_csv(driver, date_str, region_code)
             pbar.update(1)
 
@@ -88,10 +92,9 @@ if __name__ == "__main__":
         default=create_data_path("scraper_downloads"),
     )
     parser.add_argument(
-        "--parallel_browser_count",
+        "--processes",
         type=int,
-        help="Number of parallel browser instances to use for downloading charts",
-        default=6,
+        help="Number of parallel processes (browser instances) to use for downloading charts",
     )
 
     args = parser.parse_args()
@@ -106,10 +109,15 @@ if __name__ == "__main__":
     )
 
     download_dir = create_data_path(args.output_dir)
+
+    already_downloaded = set(os.listdir(download_dir))
+
+    def charts_already_downloaded(region_code, date_str):
+        file_name = f"regional-{region_code}-daily-{date_str}.csv"
+        return file_name in already_downloaded
+
     data_to_download = [
-        (r, d)
-        for (r, d) in regions_and_dates
-        if not charts_already_downloaded(download_dir, d, r)
+        (r, d) for (r, d) in regions_and_dates if not charts_already_downloaded(r, d)
     ]
 
     if len(data_to_download) == 0:
@@ -122,13 +130,12 @@ if __name__ == "__main__":
     )
     print(f"Downloading {len(data_to_download)} charts.")
 
-    # Number of processes to run in parallel
-    num_processes = args.parallel_browser_count
+    num_processes = args.processes or multiprocessing.cpu_count()
     print(
-        f"Downloading chart data using {num_processes} WebDriver instances in parallel."
+        f"Downloading chart data using {num_processes} processes (WebDriver instances) in parallel."
     )
 
-    chunks = split_into_chunks(regions_and_dates, num_processes)
+    chunks = split_into_chunks(data_to_download, num_processes)
 
     pool = multiprocessing.Pool(processes=num_processes)
 
