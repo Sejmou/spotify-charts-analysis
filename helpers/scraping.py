@@ -6,9 +6,10 @@ from dotenv import load_dotenv
 from selenium.webdriver.support.ui import WebDriverWait
 import selenium.webdriver.support.expected_conditions as EC
 import time
+from urllib.parse import quote
 
-login_page_url = "https://accounts.spotify.com/en/login?continue=https%3A%2F%2Fcharts.spotify.com/charts/overview/global"
-after_login_url = "https://charts.spotify.com/charts/overview/global"  # the URL that the driver will be at after successfully logging in
+
+login_page_url = "https://accounts.spotify.com/en/login"
 
 
 def setup_webdriver_for_download(download_path: str, headless: bool = True):
@@ -50,13 +51,23 @@ def setup_webdriver_for_download(download_path: str, headless: bool = True):
     return driver
 
 
-def login_and_accept_cookies(driver: webdriver, username, password):
-    fill_and_submit_login_form(driver, username, password)
+def login_and_accept_cookies(
+    driver: webdriver,
+    username,
+    password,
+    after_login_url="https://charts.spotify.com/charts/overview/global",
+):
+    fill_and_submit_login_form(driver, username, password, after_login_url)
 
     wait = WebDriverWait(driver, 5)
     wait.until(EC.url_contains(after_login_url))
-    time.sleep(5)  # no idea what I have to wait but if I don't it fails quite often lol
 
+    accept_cookies(driver)
+
+
+def accept_cookies(driver: webdriver):
+    time.sleep(2)  # wait for popup to appear
+    wait = WebDriverWait(driver, 5)
     cookie_button = wait.until(
         EC.visibility_of_element_located(
             (By.CSS_SELECTOR, "#onetrust-accept-btn-handler")
@@ -65,8 +76,13 @@ def login_and_accept_cookies(driver: webdriver, username, password):
     cookie_button.click()
 
 
-def fill_and_submit_login_form(driver: webdriver, username, password):
-    driver.get(login_page_url)
+def fill_and_submit_login_form(
+    driver: webdriver,
+    username,
+    password,
+    after_login_url,
+):
+    driver.get(login_page_url + f"?continue={quote(after_login_url)}")
 
     # enter credentials on login page
     username_input = driver.find_element(By.CSS_SELECTOR, "#login-username")
@@ -76,6 +92,7 @@ def fill_and_submit_login_form(driver: webdriver, username, password):
     password_input = driver.find_element(By.CSS_SELECTOR, "#login-password")
     password_input.clear()
     password_input.send_keys(password)
+    time.sleep(1)
 
     login_btn = driver.find_element(By.CSS_SELECTOR, "#login-button")
     login_btn.click()

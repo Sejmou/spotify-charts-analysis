@@ -1,0 +1,17 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Debug get_credits.py",
+      "type": "python",
+      "request": "launch",
+      "program": "cli-scripts/get_credits.py",
+      "console": "integratedTerminal",
+      "justMyCode": true,
+      "args": [
+        "data/top200_2022.parquet",
+        "data/songwriters_top200_2022.parquet"
+      ]
+    }
+  ]
+}

@@ -16,6 +16,7 @@ setup(
         "python-dotenv",
         "tqdm",
         "selenium",
+        "inquirer",
     ],
     packages=find_packages(),
     classifiers=[
