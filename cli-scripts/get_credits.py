@@ -51,13 +51,11 @@ def generate_date_strings(start_date: str, end_date: str):
         exit(1)
 
 
-def split_into_chunks(data: list, num_chunks: int):
-    chunk_size = len(data) // num_chunks
-    chunks = []
-    for i in range(num_chunks):
-        chunk = data[i * chunk_size : (i + 1) * chunk_size]
-        chunks.append(chunk)
-    return chunks
+def split_into_chunks_of_size(list_to_split: List[str], chunk_size: int):
+    return [
+        list_to_split[i : i + chunk_size]
+        for i in range(0, len(list_to_split), chunk_size)
+    ]
 
 
 def get_element_matching_css_selector(driver, css_selector):
@@ -76,9 +74,13 @@ def get_element_with_att_and_val(driver, att, val):
     return element
 
 
-def extract_data(element):
+def extract_data_from_element_in_credits_container(element, field_name):
     result = {}
-    result["name"] = element.text
+    text = element.text
+    if text == field_name:
+        return None
+
+    result["name"] = text
     if element.tag_name == "a":
         result["href"] = element.get_attribute("href")
 
@@ -94,7 +96,11 @@ def get_text_of_sibling_elements_of_dialog_p_element_with_text(driver, text):
 
     # Find all child elements
     elements = container.find_elements(By.XPATH, ".//*")
-    return [extract_data(element) for element in elements]
+    data = [
+        extract_data_from_element_in_credits_container(element, text)
+        for element in elements
+    ]
+    return [d for d in data if d is not None]
 
 
 def get_credits(driver: webdriver.Firefox, track_id: str):
@@ -137,21 +143,26 @@ def get_credits(driver: webdriver.Firefox, track_id: str):
     return track_id, performers, songwriters, producers, sources
 
 
-def setup_webdriver(idx: int, username: str, password: str):
-    print(f"Setting up WebDriver #{idx + 1}")
-    options = webdriver.FirefoxOptions()
-    options.set_preference("intl.accept_languages", "en-GB")
-    options.add_argument("-headless")
-    driver = webdriver.Firefox(options=options)
+def setup_webdriver(username: str, password: str):
+    while True:
+        try:
+            options = webdriver.FirefoxOptions()
+            options.set_preference("intl.accept_languages", "en-GB")
+            options.add_argument("-headless")
+            driver = webdriver.Firefox(options=options)
 
-    driver.get(login_page_url)
-    after_login_url = "https://open.spotify.com/"
-    login_and_accept_cookies(driver, username, password, after_login_url)
+            driver.get(login_page_url)
+            after_login_url = "https://open.spotify.com/"
+            login_and_accept_cookies(driver, username, password, after_login_url)
 
-    wait = WebDriverWait(driver, 5)
-    wait.until(EC.url_contains(after_login_url))
+            wait = WebDriverWait(driver, 5)
+            wait.until(EC.url_contains(after_login_url))
 
-    return driver
+            return driver
+        except Exception as e:
+            print(f"Error starting webdriver: {e}")
+            print("Retrying in 5 seconds...")
+            time.sleep(5)
 
 
 def flatten_list_of_lists(list_of_lists: List[List[str]]):
@@ -162,37 +173,105 @@ def flatten_list_of_lists(list_of_lists: List[List[str]]):
     return flattened_list
 
 
-def process_chunk_with_progress(
-    process_idx: int, username: str, password: str, chunk: List[str]
-):
-    driver_created = False
-    while not driver_created:
-        try:
-            driver = setup_webdriver(process_idx, username, password)
-            driver_created = True
-        except Exception as e:
-            print(f"Error starting webdriver #{process_idx + 1}: {e}")
-            print("Retrying in 5 seconds...")
-            time.sleep(5)
-    track_credits = [None] * len(chunk)
-
+def worker(track_id_queue, result_queue, username, password):
+    driver = setup_webdriver(username, password)
     try:
-        with tqdm(
-            total=len(chunk),
-            desc=f"driver #{process_idx + 1}",
-            position=process_idx + 1,
-        ) as pbar:
-            for i, track_id in enumerate(chunk):
-                track_credits[i] = get_credits(driver, track_id)
-                pbar.update(1)
-
-        driver.quit()
-
-        return track_credits
+        while True:
+            track_id = track_id_queue.get()
+            if track_id is None:
+                # Received a sentinel value, no more tasks to process
+                driver.quit()
+                break
+            track_credits = get_credits(driver, track_id)
+            result_queue.put(track_credits)
     except Exception as e:
-        print(f"Exception in process #{process_idx + 1}: {e}")
+        print(f"Error in worker: {e}")
         driver.quit()
-        return None
+
+
+def get_credits_for_track_ids(
+    track_ids, num_processes, username, password, output_file, chunk_size=100
+):
+    # Create a task queue
+    track_id_queue = multiprocessing.Queue()
+    credits_queue = multiprocessing.Queue()
+
+    with tqdm(total=len(track_ids), desc="track_ids") as pbar:
+        # Create a process pool with the specified number of processes
+        pool = multiprocessing.Pool(
+            processes=num_processes,
+            initializer=worker,
+            initargs=(track_id_queue, credits_queue, username, password),
+        )
+
+        # Add tasks to the task queue
+        for track_id in track_ids:
+            track_id_queue.put(track_id)
+
+        # Add sentinel values to indicate the end of tasks for each process
+        for _ in range(num_processes):
+            track_id_queue.put(None)
+
+        # Close the input queue to prevent further task addition
+        track_id_queue.close()
+
+        # Read results from the result queue
+        intermediate_results = []
+        finished_processes = 0
+        while finished_processes < num_processes:
+            result = credits_queue.get()
+            if result is None:
+                # Received a sentinel value, one process has finished
+                finished_processes += 1
+                print(
+                    f"Process finished, {num_processes - finished_processes} remaining"
+                )
+                continue
+            intermediate_results.append(result)
+            pbar.update(1)
+            if (
+                len(intermediate_results) == chunk_size
+                or finished_processes == num_processes
+            ):
+                # Write results to file
+                write_track_credits(intermediate_results, output_file)
+                intermediate_results = []
+
+    credits_queue.close()
+
+    # Wait for all processes to finish
+    pool.close()
+    pool.join()
+
+
+def get_existing_data(path):
+    if os.path.exists(path):
+        existing_data = (
+            pd.read_parquet(path) if output_format == "parquet" else pd.read_csv(path)
+        )
+    else:
+        existing_data = pd.DataFrame(columns=output_columns)
+        output_dir = os.path.dirname(path)
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+    return existing_data
+
+
+def write_track_credits(credits, path):
+    existing_data = get_existing_data(path)
+    output = pd.concat(
+        [
+            existing_data,
+            pd.DataFrame(
+                credits,
+                columns=output_columns,
+            ),
+        ],
+    )
+    if path.endswith(".parquet"):
+        output.to_parquet(path, index=False)
+    else:
+        output.to_csv(path, index=False)
 
 
 if __name__ == "__main__":
@@ -212,6 +291,12 @@ if __name__ == "__main__":
         type=int,
         help="Number of parallel processes (browser instances) to use for scraping the data. Defaults to number of available CPU cores.",
         default=multiprocessing.cpu_count(),
+    )
+    parser.add_argument(
+        "--chunk_size",
+        type=int,
+        help="Number of track_ids to process in each chunk. After a chunk is done processing, intermediate results will be written to the output file. Defaults to 100.",
+        default=100,
     )
 
     args = parser.parse_args()
@@ -241,17 +326,7 @@ if __name__ == "__main__":
             f"Output file '{output_path}' must be either a .csv or .parquet file"
         )
 
-    if os.path.exists(output_path):
-        existing_data = (
-            pd.read_parquet(output_path)
-            if output_format == "parquet"
-            else pd.read_csv(output_path)
-        )
-    else:
-        existing_data = pd.DataFrame(columns=output_columns)
-        output_dir = os.path.dirname(output_path)
-        if not os.path.exists(output_dir):
-            os.makedirs(output_dir)
+    existing_data = get_existing_data(output_path)
 
     if len(existing_data) > 0:
         track_ids = [
@@ -285,35 +360,13 @@ if __name__ == "__main__":
     num_processes = min(args.processes, len(track_ids))
     pool = multiprocessing.Pool(num_processes)
     print(f"Using {num_processes} webdrivers (browser instances) in parallel")
-    chunks = split_into_chunks(track_ids, num_processes)
+    chunk_size = args.chunk_size
 
-    track_credits = pool.starmap(
-        process_chunk_with_progress,
-        zip(
-            range(num_processes),
-            [username] * num_processes,
-            [password] * num_processes,
-            chunks,
-        ),
+    print(f"Fetching credits for {len(track_ids)} tracks...")
+    print(
+        f"Data will be processed in chunks of {chunk_size}; intermediate results are written back to '{output_path}' after each chunk has been processed"
     )
 
-    pool.close()
-    pool.join()
-
-    track_credits = flatten_list_of_lists(track_credits)
-
-    output = pd.concat(
-        [
-            existing_data,
-            pd.DataFrame(
-                track_credits,
-                columns=output_columns,
-            ),
-        ],
+    get_credits_for_track_ids(
+        track_ids, num_processes, username, password, output_path, chunk_size
     )
-    if output_path.endswith(".parquet"):
-        output.to_parquet(output_path, index=False)
-    else:
-        output.to_csv(output_path, index=False)
-
-    print(f"Saved output to '{output_path}'")
