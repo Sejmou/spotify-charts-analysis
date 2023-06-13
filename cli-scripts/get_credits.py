@@ -76,6 +76,15 @@ def get_element_with_att_and_val(driver, att, val):
     return element
 
 
+def extract_data(element):
+    result = {}
+    result["name"] = element.text
+    if element.tag_name == "a":
+        result["href"] = element.get_attribute("href")
+
+    return result
+
+
 def get_text_of_sibling_elements_of_dialog_p_element_with_text(driver, text):
     wait = WebDriverWait(driver, 5)
 
@@ -83,10 +92,9 @@ def get_text_of_sibling_elements_of_dialog_p_element_with_text(driver, text):
     xpath_expression = f"//div[@role='dialog']//p[contains(text(), '{text}')]/parent::*"
     container = wait.until(EC.presence_of_element_located((By.XPATH, xpath_expression)))
 
-    # Find all child elements in the container and get their text if it is not the specified text
+    # Find all child elements
     elements = container.find_elements(By.XPATH, ".//*")
-    element_texts = [element.text for element in elements if element.text != text]
-    return element_texts
+    return [extract_data(element) for element in elements]
 
 
 def get_credits(driver: webdriver.Firefox, track_id: str):
@@ -149,7 +157,8 @@ def setup_webdriver(idx: int, username: str, password: str):
 def flatten_list_of_lists(list_of_lists: List[List[str]]):
     flattened_list = []
     for sublist in list_of_lists:
-        flattened_list.extend(sublist)
+        if sublist is not None:
+            flattened_list.extend(sublist)
     return flattened_list
 
 
@@ -208,17 +217,36 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     input_path = args.input_path
-    input_df = (
-        pd.read_parquet(input_path)
-        if input_path.endswith(".parquet")
-        else pd.read_csv(input_path)
-    )
+    if input_path.endswith(".csv"):
+        input_df = pd.read_csv(input_path)
+        input_format = "csv"
+    elif input_path.endswith(".parquet"):
+        input_df = pd.read_parquet(input_path)
+        input_format = "parquet"
+    else:
+        raise ValueError(
+            f"Input file '{input_path}' must be either a .csv or .parquet file"
+        )
+
     track_ids = (input_df)["track_id"].unique().tolist()
     print(f"Found {len(track_ids)} unique track IDs in '{input_path}'")
 
     output_path = args.output_path
+    if output_path.endswith(".csv"):
+        output_format = "csv"
+    elif output_path.endswith(".parquet"):
+        output_format = "parquet"
+    else:
+        raise ValueError(
+            f"Output file '{output_path}' must be either a .csv or .parquet file"
+        )
+
     if os.path.exists(output_path):
-        existing_data = pd.read_parquet(output_path)
+        existing_data = (
+            pd.read_parquet(output_path)
+            if output_format == "parquet"
+            else pd.read_csv(output_path)
+        )
     else:
         existing_data = pd.DataFrame(columns=output_columns)
         output_dir = os.path.dirname(output_path)
@@ -235,6 +263,10 @@ if __name__ == "__main__":
             f"Skipping {len(existing_data)} track IDs already contained in '{output_path}'"
         )
 
+    if len(track_ids) == 0:
+        print("All track IDs already contained in output file. Nothing to do.")
+        exit(0)
+
     load_dotenv()
     username = os.environ.get("SPOTIFY_USERNAME")
     password = os.environ.get("SPOTIFY_PASSWORD")
@@ -250,10 +282,11 @@ if __name__ == "__main__":
         username = answers["username"]
         password = answers["password"]
 
-    num_processes = args.processes
+    num_processes = min(args.processes, len(track_ids))
     pool = multiprocessing.Pool(num_processes)
     print(f"Using {num_processes} webdrivers (browser instances) in parallel")
-    chunks = split_into_chunks(track_ids[:10], num_processes)
+    chunks = split_into_chunks(track_ids, num_processes)
+
     track_credits = pool.starmap(
         process_chunk_with_progress,
         zip(
@@ -263,6 +296,10 @@ if __name__ == "__main__":
             chunks,
         ),
     )
+
+    pool.close()
+    pool.join()
+
     track_credits = flatten_list_of_lists(track_credits)
 
     output = pd.concat(
@@ -274,4 +311,9 @@ if __name__ == "__main__":
             ),
         ],
     )
-    output.to_parquet(output_path, index=False)
+    if output_path.endswith(".parquet"):
+        output.to_parquet(output_path, index=False)
+    else:
+        output.to_csv(output_path, index=False)
+
+    print(f"Saved output to '{output_path}'")
