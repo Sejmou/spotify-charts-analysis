@@ -2,7 +2,7 @@ from setuptools import find_packages, setup
 
 setup(
     name="helpers",
-    version="0.1",
+    version="0.2",
     description="A package with helpers for this project that also contains all packages used inside the helpers package or notebooks/script files in this repo.",
     author="Samo Kolter",
     author_email="samo.kolter@gmail.com",  # picked arbitrary group member email
@@ -17,6 +17,7 @@ setup(
         "tqdm",
         "selenium",
         "inquirer",
+        "spotipy",
     ],
     packages=find_packages(),
     classifiers=[

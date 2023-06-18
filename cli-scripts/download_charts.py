@@ -1,17 +1,23 @@
 # Downloads Spotify charts for a list of regions and a date range specified by start and end dates.
 # Also checks if files already exist for a combination of date and region to avoid re-downloading.
 
-from helpers import (
-    download_region_chart_csv,
-    setup_webdriver_for_download,
-    create_data_path,
+from typing import Literal
+from helpers.scraping import (
+    get_spotify_credentials,
+    login_and_accept_cookies,
 )
+from helpers.data import create_data_path
 from datetime import datetime, timedelta
 import argparse
 import multiprocessing
 from tqdm import tqdm
 from itertools import product
 import os
+from selenium import webdriver
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support import expected_conditions as EC
+import time
 
 
 def read_lines_from_file(path: str):
@@ -52,15 +58,74 @@ def split_into_chunks(data: list, num_chunks: int):
     return chunks
 
 
-def process_chunk(idx: int, chunk: list, download_path: str):
-    driver = setup_webdriver(idx, download_path)
+def process_chunk(
+    idx: int, chunk: list, username: str, password: str, download_path: str
+):
+    driver = setup_webdriver(idx, username, password, download_path)
     process_chunk_with_progress(idx, driver, chunk, download_path)
     driver.quit()
 
 
-def setup_webdriver(idx, download_path):
+def download_region_chart_csv(
+    driver: webdriver,
+    date: str,
+    region: str,
+    granularity: Literal["weekly", "daily"] = "daily",
+):
+    url = (
+        f"https://charts.spotify.com/charts/view/regional-{region}-{granularity}/{date}"
+    )
+
+    driver.get(url)
+    wait = WebDriverWait(driver, 5)
+    download_button = wait.until(
+        EC.visibility_of_element_located(
+            (By.CSS_SELECTOR, "button[aria-labelledby='csv_download']")
+        )
+    )
+    download_button.click()
+
+
+def setup_webdriver_for_download(
+    username: str, password: str, download_path: str, headless: bool = True
+):
+    """
+    Create a Selenium webdriver that will download files to the specified path.
+
+    NOTE: This function assumes that you have placed a .env file in the same folder, containing the username and password for your Spotify account as SPOTIFY_USERNAME and SPOTIFY_PASSWORD, respectively.
+    This file should be placed in the same folder as the file that calls this function.
+
+    Parameters
+    ----------
+    download_path : str
+        The path to the directory where the webdriver will download files.
+    """
+    options = webdriver.FirefoxOptions()
+    options.set_preference(
+        "browser.download.folderList", 2
+    )  # 0: download to the desktop, 1: download to the default "Downloads" directory, 2: use the directory
+    options.set_preference("browser.download.dir", download_path)
+    options.headless = (
+        headless  # if True, run the webdriver in headless mode (no browser window)
+    )
+
+    driver = webdriver.Firefox(options=options)
+
+    setup_completed = False
+    while not setup_completed:
+        try:
+            login_and_accept_cookies(driver, username, password)
+            setup_completed = True
+        except Exception:
+            # wait for 5 seconds and try again
+            time.sleep(5)
+
+    return driver
+
+
+def setup_webdriver(idx: int, username: str, password: str, download_path: str):
     print(f"Setting up WebDriver #{idx + 1}")
-    driver = setup_webdriver_for_download(download_path)
+    driver = setup_webdriver_for_download(username, password, download_path)
     return driver
 
 
@@ -77,38 +142,50 @@ def process_chunk_with_progress(idx, driver, chunk: list, download_path: str):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("start_date", type=str, help="Start date (YYYY-MM-DD)")
-    parser.add_argument("end_date", type=str, help="End date (YYYY-MM-DD)")
+    parser.add_argument("-s", "--start_date", type=str, help="Start date (YYYY-MM-DD)")
+    parser.add_argument("-e", "--end_date", type=str, help="End date (YYYY-MM-DD)")
     parser.add_argument(
-        "--region_codes",  # -- marks optional arguments
+        "-r",
+        "--region_codes",
         type=str,
-        help="Path to a text file with a list of regions to download charts for (two-letter country codes for countries, 'global' for global charts)",
+        help="List of regions to download charts for (two-letter country codes for countries, 'global' for global charts) - can be a path to a text file or a comma-separated list of codes",
         default=create_data_path("region_codes.txt"),
+        required=True,
+        nargs="+",
     )
     parser.add_argument(
+        "-o",
         "--output_dir",
         type=str,
         help="Absolute path to directory where charts will be saved",
+        required=True,
         default=create_data_path("scraper_downloads"),
     )
     parser.add_argument(
+        "-p",
         "--processes",
         type=int,
-        help="Number of parallel processes (browser instances) to use for downloading charts",
+        help="Number of parallel processes (browser instances) to use for downloading charts; defaults to the number of CPU cores on your machine",
+        default=multiprocessing.cpu_count(),
     )
 
     args = parser.parse_args()
 
     date_strs = generate_date_strings(args.start_date, args.end_date)
     print(f"processing {len(date_strs)} dates")
-    region_codes = read_lines_from_file(args.region_codes)
+    if os.path.isfile(args.region_codes[0]):
+        region_codes = read_lines_from_file(args.region_codes)
+    else:
+        region_codes = args.region_codes
     print(f"processing {len(region_codes)} regions")
     regions_and_dates = list(product(region_codes, date_strs))
     print(
         f"processing {len(regions_and_dates)} charts (combinations of regions and dates)"
     )
 
-    download_dir = create_data_path(args.output_dir)
+    download_dir = args.output_dir
+    if not os.path.isdir(download_dir):
+        os.makedirs(download_dir)
 
     already_downloaded = set(os.listdir(download_dir))
 
@@ -124,6 +201,8 @@ if __name__ == "__main__":
         print("All charts already downloaded. Exiting.")
         exit(0)
 
+    username, password = get_spotify_credentials()
+
     print(f"Saving charts to {download_dir}")
     print(
         f"{len(regions_and_dates) - len(data_to_download)} charts already downloaded."
@@ -137,6 +216,7 @@ if __name__ == "__main__":
 
     chunks = split_into_chunks(data_to_download, num_processes)
 
+    # TODO: switch to smarter approach using a queue, like in get_credits.py
     pool = multiprocessing.Pool(processes=num_processes)
 
     pool.starmap(
@@ -144,6 +224,8 @@ if __name__ == "__main__":
         zip(
             range(num_processes),
             chunks,
+            [username] * num_processes,
+            [password] * num_processes,
             [download_dir] * num_processes,
         ),
     )

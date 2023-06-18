@@ -7,16 +7,15 @@ import multiprocessing
 from tqdm import tqdm
 import os
 from selenium import webdriver
-import inquirer
-from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 import pandas as pd
-from dotenv import load_dotenv
 from helpers.scraping import login_and_accept_cookies
 import multiprocessing
 from typing import List
 import time
+from helpers.scraping import get_spotify_credentials
 
 login_page_url = "https://open.spotify.com/"
 output_columns = ["track_id", "performers", "songwriters", "producers", "sources"]
@@ -342,20 +341,7 @@ if __name__ == "__main__":
         print("All track IDs already contained in output file. Nothing to do.")
         exit(0)
 
-    load_dotenv()
-    username = os.environ.get("SPOTIFY_USERNAME")
-    password = os.environ.get("SPOTIFY_PASSWORD")
-
-    if username is None or password is None:
-        questions = [
-            inquirer.Text("username", message="Enter your username:"),
-            inquirer.Password("password", message="Enter your password:"),
-        ]
-
-        answers = inquirer.prompt(questions)
-
-        username = answers["username"]
-        password = answers["password"]
+    username, password = get_spotify_credentials()
 
     num_processes = min(args.processes, len(track_ids))
     pool = multiprocessing.Pool(num_processes)
