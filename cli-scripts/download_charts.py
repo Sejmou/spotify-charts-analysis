@@ -18,6 +18,9 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 import time
+import pandas as pd
+
+all_regions_and_codes_csv_path = create_data_path("region_names_and_codes.csv")
 
 
 def read_lines_from_file(path: str):
@@ -149,16 +152,16 @@ if __name__ == "__main__":
         "--region_codes",
         type=str,
         help="List of regions to download charts for (two-letter country codes for countries, 'global' for global charts) - can be a path to a text file or a comma-separated list of codes",
-        default=create_data_path("region_codes.txt"),
-        required=True,
+        default=create_data_path(
+            "region_names_and_codes.csv"
+        ),  # path to file containing region names and codes for all regions with chart data on the Spotify Charts website; the 'code' column will be used for obtaining the region codes
         nargs="+",
     )
     parser.add_argument(
         "-o",
         "--output_dir",
         type=str,
-        help="Absolute path to directory where charts will be saved",
-        required=True,
+        help="Absolute path to directory where charts will be downloaded to",
         default=create_data_path("scraper_downloads"),
     )
     parser.add_argument(
@@ -173,7 +176,13 @@ if __name__ == "__main__":
 
     date_strs = generate_date_strings(args.start_date, args.end_date)
     print(f"processing {len(date_strs)} dates")
-    if os.path.isfile(args.region_codes[0]):
+
+    if args.region_codes == all_regions_and_codes_csv_path:
+        print(
+            f"No region codes provided. Using region codes for all countries with Spotify Chart data from '{all_regions_and_codes_csv_path}'"
+        )
+        region_codes = pd.read_csv(all_regions_and_codes_csv_path)["code"].tolist()
+    elif os.path.isfile(args.region_codes[0]):
         region_codes = read_lines_from_file(args.region_codes)
     else:
         region_codes = args.region_codes
@@ -184,10 +193,12 @@ if __name__ == "__main__":
     )
 
     download_dir = args.output_dir
+    print(f"Using '{download_dir}' as download directory")
     if not os.path.isdir(download_dir):
         os.makedirs(download_dir)
 
     already_downloaded = set(os.listdir(download_dir))
+    print(f"{len(already_downloaded)} files already exist in download directory.")
 
     def charts_already_downloaded(region_code, date_str):
         file_name = f"regional-{region_code}-daily-{date_str}.csv"
