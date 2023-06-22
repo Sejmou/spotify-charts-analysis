@@ -1,7 +1,20 @@
 # Downloads Spotify charts for a list of regions and a date range specified by start and end dates.
 # Also checks if files already exist for a combination of date and region to avoid re-downloading.
+# If for a given date and region no chart exists, an empty (i.e. header-only) file is created
+# It has the same filename format and headers as a file downloaded normally by clicking the download button on the URL of a chart page
 
-from typing import Literal
+column_names = [
+    "rank",
+    "uri",
+    "artist_names",
+    "track_name",
+    "source",
+    "peak_rank",
+    "previous_rank",
+    "days_on_chart",
+    "streams",
+]  # the column names of the downloaded files (or 'placeholder files' for non-existent charts as described above)
+
 from helpers.scraping import (
     get_spotify_credentials,
     login_and_accept_cookies,
@@ -52,41 +65,40 @@ def generate_date_strings(start_date: str, end_date: str):
         exit(1)
 
 
-def split_into_chunks(data: list, num_chunks: int):
-    chunk_size = len(data) // num_chunks
-    chunks = []
-    for i in range(num_chunks):
-        chunk = data[i * chunk_size : (i + 1) * chunk_size]
-        chunks.append(chunk)
-    return chunks
-
-
-def process_chunk(
-    idx: int, chunk: list, username: str, password: str, download_path: str
-):
-    driver = setup_webdriver(idx, username, password, download_path)
-    process_chunk_with_progress(idx, driver, chunk, download_path)
-    driver.quit()
-
-
 def download_region_chart_csv(
     driver: webdriver,
-    date: str,
-    region: str,
-    granularity: Literal["weekly", "daily"] = "daily",
+    url: str,
+    download_path: str,
 ):
-    url = (
-        f"https://charts.spotify.com/charts/view/regional-{region}-{granularity}/{date}"
-    )
+    """
+    Attempts to download a chart CSV file from a given URL.
 
+    If the chart does not exist, a placeholder file is created.
+
+    Parameters
+    ----------
+    driver : webdriver
+        The Selenium webdriver that will download the file.
+    url : str
+        The URL of the chart page.
+    download_path : str
+        The path to the directory where the webdriver will download files.
+    """
     driver.get(url)
-    wait = WebDriverWait(driver, 5)
-    download_button = wait.until(
-        EC.visibility_of_element_located(
-            (By.CSS_SELECTOR, "button[aria-labelledby='csv_download']")
+    wait = WebDriverWait(driver, 2)
+    try:
+        download_button = wait.until(
+            EC.visibility_of_element_located(
+                (By.CSS_SELECTOR, "button[aria-labelledby='csv_download']")
+            )
         )
-    )
-    download_button.click()
+        download_button.click()
+    except Exception:
+        # check if error panel exists (if it does, the chart does not exist)
+        wait.until(
+            EC.visibility_of_element_located((By.CSS_SELECTOR, '[class^="ErrorPanel"]'))
+        )
+        create_placeholder_file(download_path, url)
 
 
 def setup_webdriver_for_download(
@@ -95,13 +107,16 @@ def setup_webdriver_for_download(
     """
     Create a Selenium webdriver that will download files to the specified path.
 
-    NOTE: This function assumes that you have placed a .env file in the same folder, containing the username and password for your Spotify account as SPOTIFY_USERNAME and SPOTIFY_PASSWORD, respectively.
-    This file should be placed in the same folder as the file that calls this function.
-
     Parameters
     ----------
+    username : str
+        Spotify username.
+    password : str
+        Spotify password.
     download_path : str
         The path to the directory where the webdriver will download files.
+    headless : bool, optional
+        If True, run the webdriver in headless mode (no browser window), by default True
     """
     options = webdriver.FirefoxOptions()
     options.set_preference(
@@ -121,26 +136,121 @@ def setup_webdriver_for_download(
             setup_completed = True
         except Exception:
             # wait for 5 seconds and try again
+            print("Error in driver setup, retrying...")
             time.sleep(5)
 
     return driver
 
 
-def setup_webdriver(idx: int, username: str, password: str, download_path: str):
-    print(f"Setting up WebDriver #{idx + 1}")
+def worker(url_queue, download_event, username: str, password: str, download_path: str):
     driver = setup_webdriver_for_download(username, password, download_path)
-    return driver
+    print("Worker started")
+    while True:
+        url = url_queue.get()
+        if url is None:
+            # Received a sentinel value, no more tasks to process
+            driver.quit()
+            break
+        url_processed = False
+        while not url_processed:
+            try:
+                download_region_chart_csv(driver, url, download_path)
+                download_event.set()
+                url_processed = True
+            except Exception as e:
+                print(f"Error downloading from {url}: {e}")
+                print("Retrying...")
 
 
-def process_chunk_with_progress(idx, driver, chunk: list, download_path: str):
-    with tqdm(total=len(chunk), desc=f"driver #{idx + 1}", position=idx + 1) as pbar:
-        for i, (region_code, date_str) in enumerate(chunk):
-            if i > 0 and i % 128 == 0:
-                # reset webdriver every 128 downloads as for some reason it starts to hang after around this number of downloads
-                driver.quit()
-                driver = setup_webdriver(idx, download_path)
-            download_region_chart_csv(driver, date_str, region_code)
+def download_charts(
+    download_urls: list,
+    num_processes: int,
+    username: str,
+    password: str,
+    download_path: str,
+):
+    url_queue = multiprocessing.Queue()
+    for url in download_urls:
+        url_queue.put(url)
+
+    download_event = multiprocessing.Event()
+
+    # Add a sentinel value for each process
+    for _ in range(num_processes):
+        url_queue.put(None)
+
+    pool = multiprocessing.Pool(
+        processes=num_processes,
+        initializer=worker,
+        initargs=(url_queue, download_event, username, password, download_path),
+    )
+
+    with tqdm(total=len(download_urls), desc="downloaded charts") as pbar:
+        while not url_queue.empty():
+            download_event.wait()
+            download_event.clear()
             pbar.update(1)
+
+    pool.close()
+    pool.join()
+
+
+def get_chart_url(region: str, date: str):
+    return f"https://charts.spotify.com/charts/view/regional-{region}-daily/{date}"
+
+
+def get_date_and_region_code(chart_url: str):
+    split_url = chart_url.split("/")
+    date = split_url[-1]
+    region_code = split_url[-2].split("-")[1]
+    return date, region_code
+
+
+def create_placeholder_file(download_path: str, chart_url: str):
+    """
+    Creates an empty file with the same name as a chart that does not exist.
+
+    Used for charts that do not exist for a given date and region.
+
+    This approach makes merging incomplete charts easier later on.
+
+    For example, chart data for Belarus is not available for January 2022, but data exists from February onwards.
+
+    When using empty placeholder files, the `combine_charts.py` script doesn't have to be adapted to handle non-existent files. An additional advantage is that we then also know that we already tried downloading charts for a given date if the 'empty' file already exists.
+
+    Parameters
+    ----------
+    download_path : str
+        The path to the directory where the webdriver downloads files.
+    chart_url : str
+        The URL of the chart that does not exist.
+    """
+    date, region_code = get_date_and_region_code(chart_url)
+    filename = create_chart_filename(region_code, date)
+    filepath = os.path.join(download_path, filename)
+    df = pd.DataFrame(columns=column_names)
+    df.to_csv(filepath, index=False)
+    # print(
+    #     f"Created placeholder file for non-existent chart for URL '{chart_url}' at '{filepath}'"
+    # )
+
+
+def create_chart_filename(region_code: str, date: str):
+    """
+    This function is used to create a placeholder filename for a chart that does not exist.
+
+    It uses the same file name format as 'regularly downloaded files':
+
+    `regional-{region_code}-daily-{date}.csv` where `{region_code}` is the region code and `{date}` is the date in YYYY-MM-DD format
+
+    Parameters
+    ----------
+    region_code : str
+        The code used by Spotify for a given region ('global' for global region, else lowercase two-letter ISO code for a given country).
+    date : str
+        The date in YYYY-MM-DD format.
+    """
+    return f"regional-{region_code}-daily-{date}.csv"
 
 
 if __name__ == "__main__":
@@ -186,6 +296,10 @@ if __name__ == "__main__":
         region_codes = read_lines_from_file(args.region_codes)
     else:
         region_codes = args.region_codes
+
+    region_codes = [
+        "global" if r == "ww" else r for r in region_codes
+    ]  # replace region code 'ww' with 'global' for global charts (ww = worldwide; used in file under all_regions_and_codes_csv_path)
     print(f"processing {len(region_codes)} regions")
     regions_and_dates = list(product(region_codes, date_strs))
     print(
@@ -204,39 +318,25 @@ if __name__ == "__main__":
         file_name = f"regional-{region_code}-daily-{date_str}.csv"
         return file_name in already_downloaded
 
-    data_to_download = [
-        (r, d) for (r, d) in regions_and_dates if not charts_already_downloaded(r, d)
+    download_urls = [
+        f"https://charts.spotify.com/charts/view/regional-{r}-daily/{d}"
+        for (r, d) in regions_and_dates
+        if not charts_already_downloaded(r, d)
     ]
 
-    if len(data_to_download) == 0:
+    if len(download_urls) == 0:
         print("All charts already downloaded. Exiting.")
         exit(0)
 
-    username, password = get_spotify_credentials()
-
     print(f"Saving charts to {download_dir}")
-    print(
-        f"{len(regions_and_dates) - len(data_to_download)} charts already downloaded."
-    )
-    print(f"Downloading {len(data_to_download)} charts.")
+    print(f"{len(regions_and_dates) - len(download_urls)} charts already downloaded.")
+    print(f"Downloading {len(download_urls)} charts.")
 
     num_processes = args.processes or multiprocessing.cpu_count()
     print(
         f"Downloading chart data using {num_processes} processes (WebDriver instances) in parallel."
     )
 
-    chunks = split_into_chunks(data_to_download, num_processes)
+    username, password = get_spotify_credentials()
 
-    # TODO: switch to smarter approach using a queue, like in get_credits.py
-    pool = multiprocessing.Pool(processes=num_processes)
-
-    pool.starmap(
-        process_chunk,
-        zip(
-            range(num_processes),
-            chunks,
-            [username] * num_processes,
-            [password] * num_processes,
-            [download_dir] * num_processes,
-        ),
-    )
+    download_charts(download_urls, num_processes, username, password, download_dir)

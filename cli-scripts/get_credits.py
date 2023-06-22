@@ -186,6 +186,8 @@ def worker(track_id_queue, result_queue, username, password):
     except Exception as e:
         print(f"Error in worker: {e}")
         driver.quit()
+        print("Restarting worker...")
+        worker(track_id_queue, result_queue, username, password)
 
 
 def get_credits_for_track_ids(
