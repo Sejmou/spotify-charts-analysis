@@ -1,3 +1,7 @@
+# combines all Spotify Charts CSV files in a directory into a single CSV or Parquet file
+# expected to be used after running download_charts.py to download Spotify Charts CSV files into a given directory
+# usage: python combine_charts.py -i <input_dir> -o <output_file> -s <start_date> -e <end_date>
+
 # %%
 import os
 import pandas as pd
@@ -106,25 +110,33 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
-        "input_dir",
+        "-i",
+        "--input_dir",
         type=str,
         help="the directory containing downloaded Spotify Charts CSV files",
+        required=True,
     )
     parser.add_argument(
-        "output_file",
+        "-o",
+        "--output_file",
         type=str,
         help="the filename of the output file (either csv or parquet)",
+        required=True,
     )
 
     parser.add_argument(
+        "-s",
         "--start_date",
         type=str,
         help="the start date (inclusive) of the date range to include in the output file (format: YYYY-MM-DD)",
+        required=True,
     )
     parser.add_argument(
+        "-e",
         "--end_date",
         type=str,
         help="the end date (inclusive) of the date range to include in the output file (format: YYYY-MM-DD)",
+        required=True,
     )
 
     args = parser.parse_args()
