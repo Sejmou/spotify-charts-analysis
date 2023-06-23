@@ -142,12 +142,13 @@ def get_credits(driver: webdriver.Firefox, track_id: str):
     return track_id, performers, songwriters, producers, sources
 
 
-def setup_webdriver(username: str, password: str):
+def setup_webdriver(username: str, password: str, headless: bool = True):
     while True:
         try:
             options = webdriver.FirefoxOptions()
             options.set_preference("intl.accept_languages", "en-GB")
-            options.add_argument("-headless")
+            if headless:
+                options.add_argument("-headless")
             driver = webdriver.Firefox(options=options)
 
             driver.get(login_page_url)
@@ -193,9 +194,10 @@ def worker(track_id_queue, result_queue, username, password):
 def get_credits_for_track_ids(
     track_ids, num_processes, username, password, output_file, chunk_size=100
 ):
-    # Create a task queue
-    track_id_queue = multiprocessing.Queue()
-    credits_queue = multiprocessing.Queue()
+    max_queue_size = 32767  # size limit for queues in MacOS X https://stackoverflow.com/a/56379621/13727176 - when trying to add more values to the queue (via .put() in a for loop), the code would hang
+
+    track_id_queue = multiprocessing.Queue(max_queue_size)
+    credits_queue = multiprocessing.Queue(max_queue_size)
 
     with tqdm(total=len(track_ids), desc="track_ids") as pbar:
         # Create a process pool with the specified number of processes
@@ -205,38 +207,43 @@ def get_credits_for_track_ids(
             initargs=(track_id_queue, credits_queue, username, password),
         )
 
-        # Add tasks to the task queue
-        for track_id in track_ids:
-            track_id_queue.put(track_id)
+        track_id_chunks = split_into_chunks_of_size(
+            track_ids, max_queue_size - num_processes
+        )
 
-        # Add sentinel values to indicate the end of tasks for each process
-        for _ in range(num_processes):
-            track_id_queue.put(None)
+        for chunk in track_id_chunks:
+            # Add tasks to the task queue
+            for track_id in chunk:
+                track_id_queue.put(track_id)
 
-        # Close the input queue to prevent further task addition
-        track_id_queue.close()
+            # Add sentinel values to indicate the end of tasks for each process
+            for _ in range(num_processes):
+                track_id_queue.put(None)
 
-        # Read results from the result queue
-        intermediate_results = []
-        finished_processes = 0
-        while finished_processes < num_processes:
-            result = credits_queue.get()
-            if result is None:
-                # Received a sentinel value, one process has finished
-                finished_processes += 1
-                print(
-                    f"Process finished, {num_processes - finished_processes} remaining"
-                )
-                continue
-            intermediate_results.append(result)
-            pbar.update(1)
-            if (
-                len(intermediate_results) == chunk_size
-                or finished_processes == num_processes
-            ):
-                # Write results to file
-                write_track_credits(intermediate_results, output_file)
-                intermediate_results = []
+            # Close the input queue to prevent further task addition
+            track_id_queue.close()
+
+            # Read results from the result queue
+            intermediate_results = []
+            finished_processes = 0
+            while finished_processes < num_processes:
+                result = credits_queue.get()
+                if result is None:
+                    # Received a sentinel value, one process has finished
+                    finished_processes += 1
+                    print(
+                        f"Process finished, {num_processes - finished_processes} remaining"
+                    )
+                    continue
+                intermediate_results.append(result)
+                pbar.update(1)
+                if (
+                    len(intermediate_results) == chunk_size
+                    or finished_processes == num_processes
+                ):
+                    # Write results to file
+                    write_track_credits(intermediate_results, output_file)
+                    intermediate_results = []
 
     credits_queue.close()
 
@@ -278,22 +285,28 @@ def write_track_credits(credits, path):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "input_path",
+        "-i",
+        "--input_path",
         type=str,
         help="Path to a .csv or .parquet file containing Spotify track IDs (in a column named 'track_id'))",
+        required=True,
     )
     parser.add_argument(
-        "output_path",
+        "-o",
+        "--output_path",
         type=str,
         help="Path where output file with track credits will be stored. If it already exists, it will also be used to resume the data fetching process (skipping track_ids that are already contained in it).",
+        required=True,
     )
     parser.add_argument(
+        "-p",
         "--processes",
         type=int,
         help="Number of parallel processes (browser instances) to use for scraping the data. Defaults to number of available CPU cores.",
         default=multiprocessing.cpu_count(),
     )
     parser.add_argument(
+        "-c",
         "--chunk_size",
         type=int,
         help="Number of track_ids to process in each chunk. After a chunk is done processing, intermediate results will be written to the output file. Defaults to 100.",
