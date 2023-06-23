@@ -1,7 +1,6 @@
 # Fetches lyrics for tracks on Spotify which is not available via Spotify's API.
 # Uses Selenium to scrape the Spotify web player for the data.
 
-from datetime import datetime, timedelta
 import argparse
 import multiprocessing
 from tqdm import tqdm
@@ -21,48 +20,11 @@ login_page_url = "https://open.spotify.com/"
 output_columns = ["track_id", "lyrics"]
 
 
-def read_lines_from_file(path: str):
-    with open(path, "r") as f:
-        lines = (
-            f.read().splitlines()
-        )  # note to future self: DON'T use .readlines() here, it includes the line breaks in the strings
-    return lines
-
-
-def generate_date_strings(start_date: str, end_date: str):
-    try:
-        # Convert start and end dates to datetime objects
-        start_date = datetime.strptime(start_date, "%Y-%m-%d")
-        end_date = datetime.strptime(end_date, "%Y-%m-%d")
-
-        # Generate and store date strings in a list
-        date_strings: List[str] = []
-        current_date = start_date
-        while current_date <= end_date:
-            date_string = current_date.strftime("%Y-%m-%d")
-            date_strings.append(date_string)
-            current_date += timedelta(days=1)
-
-        return date_strings
-
-    except ValueError:
-        print("Invalid date format. Please use YYYY-MM-DD.")
-        exit(1)
-
-
 def split_into_chunks_of_size(list_to_split: List[str], chunk_size: int):
     return [
         list_to_split[i : i + chunk_size]
         for i in range(0, len(list_to_split), chunk_size)
     ]
-
-
-def get_element_matching_css_selector(driver, css_selector):
-    wait = WebDriverWait(driver, 5)
-    element = wait.until(
-        EC.presence_of_element_located((By.CSS_SELECTOR, css_selector))
-    )
-    return element
 
 
 def get_element_matching_xpath(driver, xpath):
@@ -108,14 +70,6 @@ def setup_webdriver(username: str, password: str, headless: bool = False):
             print(f"Error starting webdriver: {e}")
             print("Retrying in 5 seconds...")
             time.sleep(5)
-
-
-def flatten_list_of_lists(list_of_lists: List[List[str]]):
-    flattened_list = []
-    for sublist in list_of_lists:
-        if sublist is not None:
-            flattened_list.extend(sublist)
-    return flattened_list
 
 
 def worker(track_id_queue, result_queue, username, password):
