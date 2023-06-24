@@ -14,7 +14,9 @@ const names = Array.from(document.querySelectorAll('[role="option"]')).map(el =>
 const codes = Array.from(document.querySelectorAll('[role="option"]')).map(el => el.id).map(url => url.split('/')[3].split('-')[1])
 ```
 
-Note that for later stages of the project (e.g. in the `comine_charts.py` CLI script), I replaced the region code `'global'` with the two-letter code `'ww'` to make every region code two characters long.
+Note that for later stages of the project (e.g. in the `combine_charts.py` CLI script), I replaced the region code `'global'` with the two-letter code `'ww'` to make every region code two characters long.
+
+As of mid-June 2023, data for 73 regions was available (the region select dropdown contained 73 values), hence this file contains 73 mappings.
 
 ## `country_codes.csv`
 
