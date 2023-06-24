@@ -241,11 +241,11 @@ if __name__ == "__main__":
 
     existing_data = get_existing_data(output_path)
 
+    existing_track_ids = set(existing_data["track_id"].unique().tolist())
+
     if len(existing_data) > 0:
         track_ids = [
-            track_id
-            for track_id in track_ids
-            if track_id not in existing_data["track_id"].unique().tolist()
+            track_id for track_id in track_ids if track_id not in existing_track_ids
         ]
         print(
             f"Skipping {len(existing_data)} track IDs already contained in '{output_path}'"
