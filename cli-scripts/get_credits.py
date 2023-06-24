@@ -10,13 +10,12 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 import pandas as pd
-from helpers.scraping import login_and_accept_cookies
+from helpers.scraping import accept_cookies
 import multiprocessing
 from typing import List
 import time
-from helpers.scraping import get_spotify_credentials
 
-login_page_url = "https://open.spotify.com/"
+start_page_url = "https://open.spotify.com/"
 output_columns = ["track_id", "performers", "songwriters", "producers", "sources"]
 
 
@@ -104,7 +103,7 @@ def get_credits(driver: webdriver.Firefox, track_id: str):
     return track_id, performers, songwriters, producers, sources
 
 
-def setup_webdriver(username: str, password: str, headless: bool = True):
+def setup_webdriver(headless: bool = True):
     while True:
         try:
             options = webdriver.FirefoxOptions()
@@ -113,12 +112,8 @@ def setup_webdriver(username: str, password: str, headless: bool = True):
                 options.add_argument("-headless")
             driver = webdriver.Firefox(options=options)
 
-            driver.get(login_page_url)
-            after_login_url = "https://open.spotify.com/"
-            login_and_accept_cookies(driver, username, password, after_login_url)
-
-            wait = WebDriverWait(driver, 5)
-            wait.until(EC.url_contains(after_login_url))
+            driver.get(start_page_url)
+            accept_cookies(driver)
 
             return driver
         except Exception as e:
@@ -127,8 +122,8 @@ def setup_webdriver(username: str, password: str, headless: bool = True):
             time.sleep(5)
 
 
-def worker(track_id_queue, result_queue, username, password):
-    driver = setup_webdriver(username, password)
+def worker(track_id_queue, result_queue):
+    driver = setup_webdriver()
     try:
         while True:
             track_id = track_id_queue.get()
@@ -142,12 +137,10 @@ def worker(track_id_queue, result_queue, username, password):
         print(f"Error in worker: {e}")
         driver.quit()
         print("Restarting worker...")
-        worker(track_id_queue, result_queue, username, password)
+        worker(track_id_queue, result_queue)
 
 
-def get_credits_for_track_ids(
-    track_ids, num_processes, username, password, output_file, chunk_size=100
-):
+def get_credits_for_track_ids(track_ids, num_processes, output_file, chunk_size=100):
     max_queue_size = 32767  # size limit for queues in MacOS X https://stackoverflow.com/a/56379621/13727176 - when trying to add more values to the queue (via .put() in a for loop), the code would hang
 
     track_id_queue = multiprocessing.Queue(max_queue_size)
@@ -158,7 +151,7 @@ def get_credits_for_track_ids(
         pool = multiprocessing.Pool(
             processes=num_processes,
             initializer=worker,
-            initargs=(track_id_queue, credits_queue, username, password),
+            initargs=(track_id_queue, credits_queue),
         )
 
         track_id_chunks = split_into_chunks_of_size(
@@ -310,8 +303,6 @@ if __name__ == "__main__":
         print("All track IDs already contained in output file. Nothing to do.")
         exit(0)
 
-    username, password = get_spotify_credentials()
-
     num_processes = min(args.processes, len(track_ids))
     pool = multiprocessing.Pool(num_processes)
     print(f"Using {num_processes} webdrivers (browser instances) in parallel")
@@ -322,6 +313,4 @@ if __name__ == "__main__":
         f"Data will be processed in chunks of {chunk_size}; intermediate results are written back to '{output_path}' after each chunk has been processed"
     )
 
-    get_credits_for_track_ids(
-        track_ids, num_processes, username, password, output_path, chunk_size
-    )
+    get_credits_for_track_ids(track_ids, num_processes, output_path, chunk_size)

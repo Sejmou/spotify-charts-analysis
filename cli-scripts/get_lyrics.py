@@ -49,7 +49,7 @@ def get_lyrics(driver: webdriver.Firefox, track_id: str):
     return track_id, lyrics_str
 
 
-def setup_webdriver(username: str, password: str, headless: bool = False):
+def setup_webdriver(username: str, password: str, headless: bool = True):
     while True:
         try:
             options = webdriver.FirefoxOptions()
