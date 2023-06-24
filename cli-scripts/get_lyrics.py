@@ -80,6 +80,7 @@ def worker(track_id_queue, result_queue, username, password):
             if track_id is None:
                 # Received a sentinel value, no more tasks to process
                 driver.quit()
+                result_queue.put(None)
                 break
             lyrics = get_lyrics(driver, track_id)
             result_queue.put(lyrics)

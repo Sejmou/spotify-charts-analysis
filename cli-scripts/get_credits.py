@@ -130,6 +130,7 @@ def worker(track_id_queue, result_queue):
             if track_id is None:
                 # Received a sentinel value, no more tasks to process
                 driver.quit()
+                result_queue.put(None)
                 break
             track_credits = get_credits(driver, track_id)
             result_queue.put(track_credits)
@@ -158,6 +159,8 @@ def get_credits_for_track_ids(track_ids, num_processes, output_file, chunk_size=
             track_ids, max_queue_size - num_processes
         )
 
+        now = time.time()
+
         for chunk in track_id_chunks:
             # Add tasks to the task queue
             for track_id in chunk:
@@ -178,9 +181,6 @@ def get_credits_for_track_ids(track_ids, num_processes, output_file, chunk_size=
                 if result is None:
                     # Received a sentinel value, one process has finished
                     finished_processes += 1
-                    print(
-                        f"Process finished, {num_processes - finished_processes} remaining"
-                    )
                     continue
                 intermediate_results.append(result)
                 pbar.update(1)
@@ -191,7 +191,11 @@ def get_credits_for_track_ids(track_ids, num_processes, output_file, chunk_size=
                     # Write results to file
                     write_track_credits(intermediate_results, output_file)
                     intermediate_results = []
+                    print(f"Chunk processing took {time.time() - now} seconds")
+                    now = time.time()
 
+    write_track_credits(intermediate_results, output_file)
+    print(f"Done")
     credits_queue.close()
 
     # Wait for all processes to finish
