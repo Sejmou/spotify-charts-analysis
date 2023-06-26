@@ -1,5 +1,5 @@
 # Fetches metadata for albums on Spotify using spotipy (Python wrapper for Spotify API).
-# It receives paths to parquet files with album IDs as as input and outputs parquet files with metadata for all unique album IDs.
+# It receives a path to a parquet files with album IDs as as input and outputs parquet files with metadata for all unique album IDs.
 
 # The following output files are generated in the specified output directory:
 # - metadata.parquet: Contains the metadata for each album.
