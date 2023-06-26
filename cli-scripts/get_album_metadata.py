@@ -6,7 +6,6 @@
 # - images.parquet: Contains the album images for each album.
 # - artists.parquet: Contains the artist IDs for each album (together with the 'position' of the artist, i.e. primary artist, secondary artist etc.).
 # - markets.parquet: Contains the available markets for each album.
-# - genres.parquet: Contains the genres for each album (not sure if Spotify actually provides information here, but the API returns a genre prop for each album).
 # - copyrights.parquet: Contains the copyright information for each album.
 
 # Currently this script runs on a single thread. It could be sped up by using multiple threads.
@@ -29,7 +28,6 @@ def process_album_data_from_api(
     album_artists: list,
     album_markets: list,
     album_copyrights: list,
-    album_genres: list,
 ):
     """
     Processes album data from the Spotify API into a format that can be
@@ -41,7 +39,6 @@ def process_album_data_from_api(
         album_artists (list): List of tuples of shape (album_id, artist_id, pos)
         album_markets (list): List of tuples of shape (album_id, market)
         album_copyrights (list): List of tuples of shape (album_id, text, type)
-        album_genres (list): List of tuples of shape (album_id, genre)
 
     Returns:
         pd.Series: Series of album metadata in a format that can be written to a dataframe
@@ -51,7 +48,6 @@ def process_album_data_from_api(
         - album_artists
         - album_markets
         - album_copyright
-        - album_genres
     """
     for img_data in data["images"]:
         album_imgs.append(
@@ -82,9 +78,6 @@ def process_album_data_from_api(
             (data["id"], copyright_val["text"], copyright_val["type"])
         )
 
-    for genre in data["genres"]:
-        album_genres.append((data["id"], genre))
-
     series = pd.Series(data)
 
     # make sure the 'id' comes first in the series
@@ -103,7 +96,7 @@ def process_album_data_from_api(
         "external_ids",  # already processed
         "available_markets",  # already processed
         "images",  # already processed
-        "genres",  # already processed
+        "genres",  # while this prop exists, it actually always contains an empty list :(
         "copyrights",  # already processed
         "tracks",  # not interested in that atm - also, too much data
         "popularity",  # constantly changing, not useful for static analysis
@@ -152,7 +145,6 @@ if __name__ == "__main__":
     album_artists = []  # tuples of shape ('album_id', 'artist_id', 'pos')
     album_markets = []  # tuples of shape ('album_id', 'market')
     album_copyrights = []  # tuples of shape ('album_id', 'text', 'type')
-    album_genres = []  # tuples of shape ('album_id', 'genre')
 
     chunk_size = 20
     album_ids_chunks = split_into_chunks_of_size(album_ids, chunk_size)
@@ -170,7 +162,6 @@ if __name__ == "__main__":
                         album_artists=album_artists,
                         album_markets=album_markets,
                         album_copyrights=album_copyrights,
-                        album_genres=album_genres,
                     )
                     for album_data in api_resp
                 ]
@@ -209,11 +200,6 @@ if __name__ == "__main__":
     album_copyrights_path = os.path.join(output_dir, "copyrights.parquet")
     album_copyrights_df.to_parquet(album_copyrights_path)
     print(f"Saved album copyrights to '{album_copyrights_path}'")
-
-    album_genres_df = pd.DataFrame(album_genres, columns=["album_id", "genre"])
-    album_genres_path = os.path.join(output_dir, "genres.parquet")
-    album_genres_df.to_parquet(album_genres_path)
-    print(f"Saved album genres to '{album_genres_path}'")
 
     create_data_source_and_timestamp_file(
         dir_path=output_dir,

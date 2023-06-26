@@ -10,6 +10,12 @@ def split_into_chunks_of_size(list_to_split: list, chunk_size: int):
 
 
 def create_data_source_and_timestamp_file(dir_path: str, data_source: str):
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    # Get the current UTC date and time
+    current_utc_time = datetime.utcnow()
+
+    # Format the UTC time as a string
+    utc_time_string = current_utc_time.strftime("%Y-%m-%d %H:%M:%S UTC")
     with open(os.path.join(dir_path, "info.txt"), "w") as f:
-        f.write(f"Data was obtained from {data_source} on {timestamp}")
+        f.write(
+            f"Data was obtained from {data_source}\nDate and time: {utc_time_string}"
+        )
