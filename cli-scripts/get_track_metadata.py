@@ -1,4 +1,8 @@
 # Fetches track metadata for tracks on Spotify using spotipy (Python wrapper for Spotify API).
+# Three output files are generated in the specified output directory:
+# - metadata.parquet: Contains the metadata for each track.
+# - artists.parquet: Contains the artist IDs for each track (together with the 'position' of the artist, i.e. primary artist, secondary artist etc.).
+# - markets.parquet: Contains the available markets for each track.
 # Currently this script runs on a single thread. It could be sped up by using multiple threads.
 # However, this is still fast enough for our purposes (and MUCH faster than the web scraping approach used for downloading the Spotify Chart data).
 
@@ -28,7 +32,7 @@ def process_track_data_from_api(
 
     for platform, p_id in data["external_ids"].items():
         data[platform] = p_id
-    data["album"] = data["album"]["id"]
+    data["album_id"] = data["album"]["id"]
 
     artist_ids = [artist["id"] for artist in data["artists"]]
     for i, artist_id in enumerate(artist_ids):
@@ -36,6 +40,11 @@ def process_track_data_from_api(
 
     for market in data["available_markets"]:
         track_markets.append((data["id"], market))
+
+    # make sure the 'id' comes first in the series
+    id_value = data.pop("id")
+    id_series = pd.Series(id_value, index=["id"])
+    data = pd.concat([id_series, data])
 
     attrs_to_drop = [
         "type",  # always 'track'
@@ -45,11 +54,13 @@ def process_track_data_from_api(
         "external_urls",  # already processed
         "external_ids",  # already processed
         "available_markets",  # already processed
+        "album",  # already processed
         "is_local",  # always False
         "popularity",  # constantly changing, not useful for static analysis
     ]
+    data = data.drop(labels=attrs_to_drop)
 
-    return data.drop(labels=attrs_to_drop)
+    return data
 
 
 if __name__ == "__main__":
@@ -115,16 +126,18 @@ if __name__ == "__main__":
             pbar.update(1)
 
     metadata_df = pd.concat(metadata_dfs, ignore_index=True)
-
-    metadata_df.to_parquet(os.path.join(output_dir, "track_metadata.parquet"))
-    print(f"Saved track metadata to '{output_dir}/track_metadata.parquet'")
+    metadata_path = os.path.join(output_dir, "metadata.parquet")
+    metadata_df.to_parquet(metadata_path)
+    print(f"Saved track metadata to '{metadata_path}'")
 
     track_artists_df = pd.DataFrame(
         track_artists, columns=["track_id", "artist_id", "pos"]
     )
-    track_artists_df.to_parquet(os.path.join(output_dir, "track_artists.parquet"))
-    print(f"Saved track artists to '{output_dir}/track_artists.parquet'")
+    artists_path = os.path.join(output_dir, "artists.parquet")
+    track_artists_df.to_parquet(artists_path)
+    print(f"Saved track artists to '{artists_path}'")
 
     track_markets_df = pd.DataFrame(track_markets, columns=["track_id", "market"])
-    track_markets_df.to_parquet(os.path.join(output_dir, "track_markets.parquet"))
-    print(f"Saved track markets to '{output_dir}/track_markets.parquet'")
+    markets_path = os.path.join(output_dir, "markets.parquet")
+    track_markets_df.to_parquet(markets_path)
+    print(f"Saved track markets to '{markets_path}'")
