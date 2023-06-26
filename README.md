@@ -18,6 +18,11 @@ Metadata for albums can be fetched with get_album_metadata.py`. Just provide a p
 
 Finally, the `get_artist_metadata.py` script gets metadata for all unique artist IDs contained in the `artist_id` columns of specified `.parquet` files. Just as with the other two scripts, data is again written to a specified output directory.
 
+### Part 3: Scraping credits information
+Unfortunately, the information for track credits (performers, songwriters, producers) is also [not available via the Spotify API](https://community.spotify.com/t5/Spotify-for-Developers/Getting-credits-on-a-track/td-p/4950934). I again wrote a scraping script to work around that and obtain credits for given track IDs (`get_credits.py`).
+
+While I was at it, I realized that the song page I scraped the credits from also includes track lyrics. So, I wrote a script for that as well (`get_lyrics.py`). BEWARE: song lyrics are subject to copyright, so be careful not to get into legal issues.
+
 ### Example: Get Daily Top 200 chart data for 2022
 TODO: add missing commands
 
@@ -30,7 +35,7 @@ python cli-scripts/get_album_metadata.py -i data/top200_2022/tracks/metadata.par
 ```
 
 ```
-python cli-scripts/get_artist_metadata.py -i data/top200_2022/tracks/artists.parquet data/top200_2022/albums/artists.parquet -o data/top200_2022/albums
+python cli-scripts/get_artist_metadata.py -i data/top200_2022/tracks/artists.parquet data/top200_2022/albums/artists.parquet -o data/top200_2022/artists
 ```
 
 ### Addtional setup instructions
