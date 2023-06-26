@@ -1,8 +1,10 @@
 # Fetches track metadata for tracks on Spotify using spotipy (Python wrapper for Spotify API).
+
 # Three output files are generated in the specified output directory:
 # - metadata.parquet: Contains the metadata for each track.
 # - artists.parquet: Contains the artist IDs for each track (together with the 'position' of the artist, i.e. primary artist, secondary artist etc.).
 # - markets.parquet: Contains the available markets for each track.
+
 # Currently this script runs on a single thread. It could be sped up by using multiple threads.
 # However, this is still fast enough for our purposes (and MUCH faster than the web scraping approach used for downloading the Spotify Chart data).
 
@@ -11,7 +13,10 @@ from tqdm import tqdm
 import os
 import pandas as pd
 from helpers.spotipy_util import create_spotipy_client
-from helpers.util import split_into_chunks_of_size
+from helpers.util import (
+    split_into_chunks_of_size,
+    create_data_source_and_timestamp_file,
+)
 
 
 def process_track_data_from_api(
@@ -144,3 +149,8 @@ if __name__ == "__main__":
     markets_path = os.path.join(output_dir, "markets.parquet")
     track_markets_df.to_parquet(markets_path)
     print(f"Saved track markets to '{markets_path}'")
+
+    create_data_source_and_timestamp_file(
+        dir_path=output_dir,
+        data_source="Spotify API (using the .tracks() method of the Spotify client provided by the spotipy Python library)",
+    )

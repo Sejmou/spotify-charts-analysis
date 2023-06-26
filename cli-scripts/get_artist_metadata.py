@@ -2,6 +2,9 @@
 # It receives paths to parquet files containing artist IDs (in a 'artist_id' column) as as input and outputs parquet files with metadata for all unique artist IDs.
 
 # The following output files are generated in the specified output directory:
+# - metadata.parquet: Contains the metadata for each artist.
+# - images.parquet: Contains the available artist image URLs and sizes for each artist.
+# - genres.parquet: Contains the genres for each artist.
 
 # Currently this script runs on a single thread. It could be sped up by using multiple threads.
 # However, this is still fast enough for our purposes (and MUCH faster than the web scraping approach used for downloading the Spotify Chart data).
@@ -165,6 +168,6 @@ if __name__ == "__main__":
     print(f"Saved artist images to '{artist_images_path}'")
 
     create_data_source_and_timestamp_file(
-        output_dir=output_dir,
-        data_source="Spotify API (/artists endpoint)",
+        dir_path=output_dir,
+        data_source="Spotify API (using the .artists() method of the Spotify client provided by the spotipy Python library)",
     )

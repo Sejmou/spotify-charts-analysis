@@ -17,7 +17,10 @@ from tqdm import tqdm
 import os
 import pandas as pd
 from helpers.spotipy_util import create_spotipy_client
-from helpers.util import split_into_chunks_of_size
+from helpers.util import (
+    split_into_chunks_of_size,
+    create_data_source_and_timestamp_file,
+)
 
 
 def process_album_data_from_api(
@@ -211,3 +214,8 @@ if __name__ == "__main__":
     album_genres_path = os.path.join(output_dir, "genres.parquet")
     album_genres_df.to_parquet(album_genres_path)
     print(f"Saved album genres to '{album_genres_path}'")
+
+    create_data_source_and_timestamp_file(
+        dir_path=output_dir,
+        data_source="Spotify API (using the .albums() method of the Spotify client provided by the spotipy Python library)",
+    )
