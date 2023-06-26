@@ -21,7 +21,7 @@ from helpers.util import split_into_chunks_of_size
 
 
 def process_album_data_from_api(
-    data: pd.Series,
+    data: dict,
     album_imgs: list,
     album_artists: list,
     album_markets: list,
@@ -33,12 +33,12 @@ def process_album_data_from_api(
     written to a dataframe.
 
     Args:
-        data (pd.Series): Series of album metadata from the Spotify API
+        data (dict): Dictionary of album metadata from the Spotify API
         album_imgs (list): List of tuples of shape (album_id, url, width, height)
         album_artists (list): List of tuples of shape (album_id, artist_id, pos)
         album_markets (list): List of tuples of shape (album_id, market)
         album_copyrights (list): List of tuples of shape (album_id, text, type)
-        albu[m_genres (list): List of tuples of shape (album_id, genre)
+        album_genres (list): List of tuples of shape (album_id, genre)
 
     Returns:
         pd.Series: Series of album metadata in a format that can be written to a dataframe
@@ -62,15 +62,14 @@ def process_album_data_from_api(
 
     for source, url in data["external_urls"].items():
         if source != "spotify":
-            data[source] = url
+            data["source"] = url
 
     for platform, p_id in data["external_ids"].items():
         data[platform] = p_id
-    data["album_id"] = data["album"]["id"]
 
     artist_ids = [artist["id"] for artist in data["artists"]]
     for i, artist_id in enumerate(artist_ids):
-        album_artists.append((data["id"], artist_id, i))
+        album_artists.append((data["id"], artist_id, i + 1))
 
     for market in data["available_markets"]:
         album_markets.append((data["id"], market))
@@ -83,10 +82,14 @@ def process_album_data_from_api(
     for genre in data["genres"]:
         album_genres.append((data["id"], genre))
 
+    series = pd.Series(data)
+
     # make sure the 'id' comes first in the series
-    id_value = data.pop("id")
+    id_value = series.pop("id")
     id_series = pd.Series(id_value, index=["id"])
-    data = pd.concat([id_series, data])
+    series = pd.concat([id_series, series])
+
+    series.release_date = pd.to_datetime(series.release_date)
 
     attrs_to_drop = [
         "type",  # always 'album'
@@ -96,25 +99,26 @@ def process_album_data_from_api(
         "external_urls",  # already processed
         "external_ids",  # already processed
         "available_markets",  # already processed
-        "album",  # already processed
-        "is_local",  # always False
+        "images",  # already processed
+        "genres",  # already processed
+        "copyrights",  # already processed
+        "tracks",  # not interested in that atm - also, too much data
         "popularity",  # constantly changing, not useful for static analysis
     ]
 
-    data = data.drop(labels=attrs_to_drop)
+    series = series.drop(labels=attrs_to_drop)
 
-    return data
+    return series
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "-i",
-        "--input_paths",
+        "--input_path",
         type=str,
-        help="Paths to .parquet files containing album_ids (in a column named 'album_id'))",
+        help="Path to a .parquet file containing album_ids (in a column named 'album_id'))",
         required=True,
-        nargs="+",
     )
     parser.add_argument(
         "-o",
@@ -126,15 +130,11 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    input_paths = args.input_paths
-    album_ids: set = set()
-    for path in input_paths:
-        print(f"Reading album IDs from {path}...")
-        input_df = pd.read_parquet(path)
-        album_ids.update(input_df["album_id"].unique().tolist())
+    input_path = args.input_path
+    input_df = pd.read_parquet(input_path)
+    album_ids = input_df["album_id"].unique().tolist()
 
-    album_ids = list(album_ids)
-    print(f"Found {len(album_ids)} unique album IDs in the input files.")
+    print(f"Found {len(album_ids)} unique album IDs in {input_path}.")
 
     output_dir = args.output_dir
     if not os.path.exists(output_dir):
@@ -157,15 +157,20 @@ if __name__ == "__main__":
 
     with tqdm(total=len(album_ids_chunks)) as pbar:
         for album_ids in album_ids_chunks:
-            api_resp = pd.DataFrame(spotify.album(album_ids)["albums"])
-            metadata = api_resp.apply(
-                process_album_data_from_api,
-                axis=1,
-                album_imgs=album_imgs,
-                album_artists=album_artists,
-                album_markets=album_markets,
-                album_copyrights=album_copyrights,
-                album_genres=album_genres,
+            api_resp = spotify.albums(album_ids)["albums"]
+
+            metadata = pd.DataFrame(
+                [
+                    process_album_data_from_api(
+                        data=album_data,
+                        album_imgs=album_imgs,
+                        album_artists=album_artists,
+                        album_markets=album_markets,
+                        album_copyrights=album_copyrights,
+                        album_genres=album_genres,
+                    )
+                    for album_data in api_resp
+                ]
             )
             metadata_dfs.append(metadata)
             pbar.update(1)

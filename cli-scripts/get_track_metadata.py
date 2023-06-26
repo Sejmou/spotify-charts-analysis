@@ -21,7 +21,7 @@ def process_track_data_from_api(
     Processes the track data returned by the Spotify API.
 
     Args:
-        data: A pandas Series containing the track data returned by the Spotify API.
+        data: A dictionary containing the track data returned by the Spotify API.
         track_artists: A list of tuples of shape ('track_id', 'artist_id', 'pos').
         track_markets: A list of tuples of shape ('track_id', 'market').
     """
@@ -36,15 +36,17 @@ def process_track_data_from_api(
 
     artist_ids = [artist["id"] for artist in data["artists"]]
     for i, artist_id in enumerate(artist_ids):
-        track_artists.append((data["id"], artist_id, i))
+        track_artists.append((data["id"], artist_id, i + 1))
 
     for market in data["available_markets"]:
         track_markets.append((data["id"], market))
 
+    series = pd.Series(data)
+
     # make sure the 'id' comes first in the series
-    id_value = data.pop("id")
+    id_value = series.pop("id")
     id_series = pd.Series(id_value, index=["id"])
-    data = pd.concat([id_series, data])
+    series = pd.concat([id_series, series])
 
     attrs_to_drop = [
         "type",  # always 'track'
@@ -58,9 +60,10 @@ def process_track_data_from_api(
         "is_local",  # always False
         "popularity",  # constantly changing, not useful for static analysis
     ]
-    data = data.drop(labels=attrs_to_drop)
 
-    return data
+    series = series.drop(labels=attrs_to_drop)
+
+    return series
 
 
 if __name__ == "__main__":
