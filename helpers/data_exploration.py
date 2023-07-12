@@ -52,3 +52,15 @@ def load_parquet_files_in_dir(dir_path: str):
         df_dict[file.split(".")[0]] = df
 
     return df_dict
+
+
+def get_spotify_track_link(id: str):
+    return f"https://open.spotify.com/track/{id}"
+
+
+def get_spotify_album_link(id: str):
+    return f"https://open.spotify.com/album/{id}"
+
+
+def get_spotify_artist_link(id: str):
+    return f"https://open.spotify.com/artist/{id}"

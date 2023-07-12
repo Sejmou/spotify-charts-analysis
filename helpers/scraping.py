@@ -27,13 +27,13 @@ def login_and_accept_cookies(
 
 
 def accept_cookies(driver: webdriver):
-    time.sleep(2)  # wait for popup to appear
     wait = WebDriverWait(driver, 5)
     cookie_button = wait.until(
-        EC.visibility_of_element_located(
-            (By.CSS_SELECTOR, "#onetrust-accept-btn-handler")
-        )
+        EC.element_to_be_clickable((By.CSS_SELECTOR, "#onetrust-accept-btn-handler"))
     )
+    time.sleep(
+        1
+    )  # apparently, sometimes clicking immediately after the button is clickable doesn't register the click properly, so wait a while
     cookie_button.click()
 
 
