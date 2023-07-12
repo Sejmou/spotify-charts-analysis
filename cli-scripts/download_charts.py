@@ -20,6 +20,7 @@ from helpers.scraping import (
     login_and_accept_cookies,
 )
 from helpers.data import create_data_path
+from helpers.util import split_into_chunks_of_size
 from datetime import datetime, timedelta
 import argparse
 import multiprocessing
@@ -32,6 +33,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 import time
 import pandas as pd
+import random
 
 all_regions_and_codes_csv_path = create_data_path("region_names_and_codes.csv")
 
@@ -85,10 +87,10 @@ def download_region_chart_csv(
         The path to the directory where the webdriver will download files.
     """
     driver.get(url)
-    wait = WebDriverWait(driver, 2)
+    wait = WebDriverWait(driver, 5)
     try:
         download_button = wait.until(
-            EC.visibility_of_element_located(
+            EC.element_to_be_clickable(
                 (By.CSS_SELECTOR, "button[aria-labelledby='csv_download']")
             )
         )
@@ -135,15 +137,24 @@ def setup_webdriver_for_download(
             login_and_accept_cookies(driver, username, password)
             setup_completed = True
         except Exception:
-            # wait for 5 seconds and try again
-            print("Error in driver setup, retrying...")
-            time.sleep(5)
+            retry_wait_time = random.uniform(0, 1)
+            print(
+                f"Error in driver setup. Trying again in {retry_wait_time} seconds..."
+            )
+            time.sleep(retry_wait_time)
 
     return driver
 
 
-def worker(url_queue, download_event, username: str, password: str, download_path: str):
-    driver = setup_webdriver_for_download(username, password, download_path)
+def worker(
+    url_queue,
+    download_event,
+    username: str,
+    password: str,
+    download_path: str,
+    headless: bool = True,
+):
+    driver = setup_webdriver_for_download(username, password, download_path, headless)
     print("Worker started")
     while True:
         url = url_queue.get()
@@ -168,28 +179,53 @@ def download_charts(
     username: str,
     password: str,
     download_path: str,
+    headless: bool = True,
 ):
-    url_queue = multiprocessing.Queue()
-    for url in download_urls:
-        url_queue.put(url)
+    max_queue_size = 32767  # size limit for queues in MacOS X https://stackoverflow.com/a/56379621/13727176 - when trying to add more values to the queue (via .put() in a for loop), the code would hang
+    url_queue = multiprocessing.Queue(max_queue_size)
 
     download_event = multiprocessing.Event()
-
-    # Add a sentinel value for each process
-    for _ in range(num_processes):
-        url_queue.put(None)
 
     pool = multiprocessing.Pool(
         processes=num_processes,
         initializer=worker,
-        initargs=(url_queue, download_event, username, password, download_path),
+        initargs=(
+            url_queue,
+            download_event,
+            username,
+            password,
+            download_path,
+            headless,
+        ),
+    )
+
+    url_chunks = split_into_chunks_of_size(
+        download_urls, max_queue_size - num_processes
     )
 
     with tqdm(total=len(download_urls), desc="downloaded charts") as pbar:
-        while not url_queue.empty():
-            download_event.wait()
-            download_event.clear()
-            pbar.update(1)
+        current = time.time()
+        for chunk in url_chunks:
+            for url in chunk:
+                url_queue.put(url)
+
+            # Wait for all processes to finish
+            while not url_queue.empty():
+                download_event.wait()
+                download_event.clear()
+                pbar.update(1)
+                if pbar.n % 60 == 0:
+                    previous = current
+                    current = time.time()
+                    time_passed = current - previous
+                    print(
+                        "Processed last 60 URLs in {:.2f} seconds".format(time_passed)
+                    )
+                    print(f"That's {60/time_passed} URLs per second")
+
+    # Add a sentinel value for each process to signal that there are no more tasks to process
+    for _ in range(num_processes):
+        url_queue.put(None)
 
     pool.close()
     pool.join()
@@ -255,8 +291,12 @@ def create_chart_filename(region_code: str, date: str):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("-s", "--start_date", type=str, help="Start date (YYYY-MM-DD)")
-    parser.add_argument("-e", "--end_date", type=str, help="End date (YYYY-MM-DD)")
+    parser.add_argument(
+        "-s", "--start_date", type=str, help="Start date (YYYY-MM-DD)", required=True
+    )
+    parser.add_argument(
+        "-e", "--end_date", type=str, help="End date (YYYY-MM-DD)", required=True
+    )
     parser.add_argument(
         "-r",
         "--region_codes",
@@ -280,6 +320,11 @@ if __name__ == "__main__":
         type=int,
         help="Number of parallel processes (browser instances) to use for downloading charts; defaults to the number of CPU cores on your machine",
         default=multiprocessing.cpu_count(),
+    )
+    parser.add_argument(
+        "--no-headless",
+        help="If set, the browser windows will be visible while downloading charts",
+        action="store_true",
     )
 
     args = parser.parse_args()
@@ -339,4 +384,11 @@ if __name__ == "__main__":
 
     username, password = get_spotify_credentials()
 
-    download_charts(download_urls, num_processes, username, password, download_dir)
+    download_charts(
+        download_urls,
+        num_processes,
+        username,
+        password,
+        download_dir,
+        headless=not args.no_headless,
+    )
