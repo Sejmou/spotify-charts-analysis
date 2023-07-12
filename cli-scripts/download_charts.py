@@ -104,7 +104,7 @@ def download_region_chart_csv(
 
 
 def setup_webdriver_for_download(
-    username: str, password: str, download_path: str, headless: bool = True
+    username: str, password: str, download_path: str, headless: bool, worker_id: str
 ):
     """
     Create a Selenium webdriver that will download files to the specified path.
@@ -137,9 +137,9 @@ def setup_webdriver_for_download(
             login_and_accept_cookies(driver, username, password)
             setup_completed = True
         except Exception:
-            retry_wait_time = random.uniform(0, 1)
+            retry_wait_time = random.uniform(20, 60)
             print(
-                f"Error in driver setup. Trying again in {retry_wait_time} seconds..."
+                f"{worker_id}: Error in driver setup. Trying again in {retry_wait_time} seconds..."
             )
             time.sleep(retry_wait_time)
 
@@ -152,15 +152,25 @@ def worker(
     username: str,
     password: str,
     download_path: str,
-    headless: bool = True,
+    headless: bool,
+    no_of_workers: int,
 ):
-    driver = setup_webdriver_for_download(username, password, download_path, headless)
-    print("Worker started")
+    worker_id = multiprocessing.current_process().name
+    driver = setup_webdriver_for_download(
+        username, password, download_path, headless, worker_id
+    )
+    print(f"{worker_id} started")
     while True:
         url = url_queue.get()
         if url is None:
             # Received a sentinel value, no more tasks to process
+            # Wait until all downloads are complete
+            print("Worker finished, waiting for downloads to complete...")
+            while True:
+                if get_number_of_pending_downloads(download_path) == 0:
+                    break
             driver.quit()
+            print("Worker stopped")
             break
         url_processed = False
         while not url_processed:
@@ -168,9 +178,33 @@ def worker(
                 download_region_chart_csv(driver, url, download_path)
                 download_event.set()
                 url_processed = True
+                while True:
+                    # Wait until the number of pending downloads is less than the number of workers
+                    # Otherwise, system might hang because of too many pending downloads
+                    pending_downloads = get_number_of_pending_downloads(download_path)
+                    if pending_downloads < no_of_workers:
+                        break
             except Exception as e:
-                print(f"Error downloading from {url}: {e}")
+                print(f"{worker_id}: Error downloading from {url}: {e}")
                 print("Retrying...")
+
+
+def remove_incomplete_downloads(path: str = "."):
+    """
+    Removes all files with the .part extension from the specified directory.
+    """
+    incomplete_downloads = [f for f in os.listdir(path) if f.endswith("part")]
+    for file in incomplete_downloads:
+        os.remove(os.path.join(path, file))
+    print(f"Removed {len(incomplete_downloads)} incomplete downloads in '{path}'")
+
+
+def get_number_of_pending_downloads(path: str = "."):
+    """
+    Returns a list of the paths of the files that are currently being downloaded.
+    """
+    pending_downloads = [f for f in os.listdir(path) if f.endswith("part")]
+    return len(pending_downloads)
 
 
 def download_charts(
@@ -196,6 +230,7 @@ def download_charts(
             password,
             download_path,
             headless,
+            num_processes,
         ),
     )
 
@@ -318,8 +353,10 @@ if __name__ == "__main__":
         "-p",
         "--processes",
         type=int,
-        help="Number of parallel processes (browser instances) to use for downloading charts; defaults to the number of CPU cores on your machine",
-        default=multiprocessing.cpu_count(),
+        help="Number of parallel processes (browser instances) to use for downloading charts",
+        default=min(
+            8, multiprocessing.cpu_count() - 1
+        ),  # using more than 8 processes never worked for me on my M1 Macbook Pro
     )
     parser.add_argument(
         "--no-headless",
@@ -376,6 +413,7 @@ if __name__ == "__main__":
     print(f"Saving charts to {download_dir}")
     print(f"{len(regions_and_dates) - len(download_urls)} charts already downloaded.")
     print(f"Downloading {len(download_urls)} charts.")
+    remove_incomplete_downloads(download_dir)
 
     num_processes = args.processes or multiprocessing.cpu_count()
     print(
