@@ -27,7 +27,7 @@ def login_and_accept_cookies(
 
 
 def accept_cookies(driver: webdriver):
-    wait = WebDriverWait(driver, 5)
+    wait = WebDriverWait(driver, 15)
     cookie_button = wait.until(
         EC.element_to_be_clickable((By.CSS_SELECTOR, "#onetrust-accept-btn-handler"))
     )

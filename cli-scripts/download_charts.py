@@ -157,8 +157,7 @@ def setup_webdriver_for_download(
 
 def worker(
     url_queue,
-    init_event,
-    download_event,
+    result_queue,
     username: str,
     password: str,
     download_path: str,
@@ -169,7 +168,6 @@ def worker(
     driver = setup_webdriver_for_download(
         username, password, download_path, headless, worker_id
     )
-    init_event.set()
     completed_downloads = 0
     while True:
         url = url_queue.get()
@@ -190,7 +188,6 @@ def worker(
                 download_region_chart_csv(driver, url, download_path)
                 duration = time.time() - start_time
 
-                download_event.set()
                 while True:
                     # Wait until the number of pending downloads is less than the number of workers
                     # Otherwise, system might hang because of too many pending downloads
@@ -199,6 +196,7 @@ def worker(
                         break
                 url_processed = True
                 completed_downloads += 1
+                result_queue.put(None)
 
             except Exception as e:
                 print(f"{worker_id}: Error downloading from {url}: {e}")
@@ -207,10 +205,12 @@ def worker(
                 )
                 print("Retrying...")
 
-        if completed_downloads % 100 == 0:
-            # for some reason, the driver runs out of memory after many downloads
+        # for some reason, the driver runs out of memory after too many downloads
+        # so we restart the driver after a certain number of downloads to avoid this
+        restart_interval = 128
+        if completed_downloads % restart_interval == 0:
             print(
-                f"{worker_id}: Downloaded {completed_downloads} charts, restarting driver to avoid memory leak"
+                f"{worker_id}: Downloaded {completed_downloads} charts, restarting driver (like every {restart_interval} downloads) to avoid out of memory error..."
             )
             driver.quit()
             driver = setup_webdriver_for_download(
@@ -249,39 +249,39 @@ def get_number_of_pending_downloads(path: str = "."):
     return len(pending_downloads)
 
 
-def url_feeder(url_queue, download_urls, init_event, num_workers):
+def url_feeder(download_urls, url_queue, result_queue, num_processes):
     # You might wonder why this is used
     # The reason is that I wanted to have some kind of 'rate-limiting' mechanism
     # If I just put all the URLs in the queue at once, the workers would start downloading them all at once
     # This would either cause the system to hang because of too many pending downloads OR
     # cause the Spotify server to block my IP because of too many requests
+    urls_left_to_download = len(download_urls)
+    with tqdm(total=len(download_urls), desc="downloaded charts") as pbar:
+        current = time.time()
+        while len(download_urls) > 0:
+            downloads_current_chunk = 0
+            for i in range(0, num_processes):
+                if len(download_urls) > 0:
+                    url_queue.put(download_urls.pop())
+                    downloads_current_chunk += 1
 
-    # workers_left_to_init = num_workers
-    # while workers_left_to_init > 0:
-    #     init_event.wait()
-    #     init_event.clear()
-    #     print(f"{workers_left_to_init} workers left to initialize")
-    #     workers_left_to_init -= 1
-    # print("All workers initialized, starting to feed urls")
-
-    init_event.wait()
-    print("At least one worker ready to receive URLs, starting to feed...")
-
-    # using chunks of size MAX_QUEUE_SIZE to avoid queue hang issue (see comment for MAX_QUEUE_SIZE)
-    url_chunks = split_into_chunks_of_size(download_urls, MAX_QUEUE_SIZE)
-    for chunk in url_chunks:
-        for url in chunk:
-            random_sleep = random.uniform(0.05, 0.3)
-            time.sleep(random_sleep)
-            url_queue.put(url)
-
-        # queue must never grow beyond MAX_QUEUE_SIZE - this is my hacky way of verifying that
-        while True:
-            if url_queue.empty():
-                break
-    # Send a sentinel value to tell the workers to stop
-    for _ in range(num_processes):
-        url_queue.put(None)
+            for i in range(0, downloads_current_chunk):
+                # wait for download to complete
+                result_queue.get()
+                downloads_current_chunk -= 1
+                pbar.update(1)
+                if pbar.n % 60 == 0:
+                    previous = current
+                    current = time.time()
+                    time_passed = current - previous
+                    print(
+                        "Processed last 60 URLs in {:.2f} seconds".format(time_passed)
+                    )
+                    print(f"That's {60/time_passed} URLs per second")
+                    print(
+                        f"ETA (assuming data-processing rate remains the same): {timedelta(seconds=(urls_left_to_download/(60/time_passed)))}"
+                    )
+                urls_left_to_download -= 1
 
 
 def download_charts(
@@ -292,17 +292,15 @@ def download_charts(
     download_path: str,
     headless: bool = True,
 ):
-    url_queue = multiprocessing.Queue(MAX_QUEUE_SIZE)
-    init_event = multiprocessing.Event()
-    download_event = multiprocessing.Event()
+    url_queue = multiprocessing.Queue()
+    result_queue = multiprocessing.Queue()
 
     pool = multiprocessing.Pool(
         processes=num_processes,
         initializer=worker,
         initargs=(
             url_queue,
-            init_event,
-            download_event,
+            result_queue,
             username,
             password,
             download_path,
@@ -311,30 +309,14 @@ def download_charts(
         ),
     )
 
-    # Start the url feeder thread
-    url_feeder_thread = threading.Thread(
-        target=url_feeder, args=(url_queue, download_urls, init_event, num_processes)
-    )
-    url_feeder_thread.start()
-    urls_left_to_download = len(download_urls)
+    # Feed URLs until all were processed
+    url_feeder(download_urls, url_queue, result_queue, num_processes)
 
-    with tqdm(total=len(download_urls), desc="downloaded charts") as pbar:
-        current = time.time()
-        while urls_left_to_download > 0:
-            download_event.wait()
-            download_event.clear()
-            pbar.update(1)
-            if pbar.n % 60 == 0:
-                previous = current
-                current = time.time()
-                time_passed = current - previous
-                print("Processed last 60 URLs in {:.2f} seconds".format(time_passed))
-                print(f"That's {60/time_passed} URLs per second")
-                print(
-                    f"ETA (assuming data-processing rate remains the same): {timedelta(seconds=(urls_left_to_download/(60/time_passed)))}"
-                )
-            urls_left_to_download -= 1
+    # Send a sentinel value for each worker to tell the workers to stop
+    for _ in range(num_processes):
+        url_queue.put(None)
 
+    # Wait for all workers to finish and exit
     pool.close()
     pool.join()
 
