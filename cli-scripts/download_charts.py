@@ -33,8 +33,11 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 import time
 import pandas as pd
+import threading
 import random
 
+MAX_QUEUE_SIZE = 32767  # size limit for queues in MacOS X https://stackoverflow.com/a/56379621/13727176 - when trying to add more values to the queue (via .put() in a for loop), the code would hang
+# processed_urls = 0  # number of items processed by the worker processes
 all_regions_and_codes_csv_path = create_data_path("region_names_and_codes.csv")
 
 
@@ -88,18 +91,22 @@ def download_region_chart_csv(
     """
     driver.get(url)
     wait = WebDriverWait(driver, 5)
-    try:
-        download_button = wait.until(
+
+    download_button_or_error_page = wait.until(
+        EC.any_of(
             EC.element_to_be_clickable(
                 (By.CSS_SELECTOR, "button[aria-labelledby='csv_download']")
-            )
+            ),
+            EC.visibility_of_element_located(
+                (By.CSS_SELECTOR, '[class^="ErrorPanel"]')
+            ),
         )
+    )
+    if download_button_or_error_page.tag_name == "button":
+        download_button = download_button_or_error_page
         download_button.click()
-    except Exception:
-        # check if error panel exists (if it does, the chart does not exist)
-        wait.until(
-            EC.visibility_of_element_located((By.CSS_SELECTOR, '[class^="ErrorPanel"]'))
-        )
+    else:
+        # error panel for non-existent chart exists -> create placeholder file
         create_placeholder_file(download_path, url)
 
 
@@ -137,17 +144,20 @@ def setup_webdriver_for_download(
             login_and_accept_cookies(driver, username, password)
             setup_completed = True
         except Exception:
-            retry_wait_time = random.uniform(20, 60)
+            retry_wait_time = 30
             print(
                 f"{worker_id}: Error in driver setup. Trying again in {retry_wait_time} seconds..."
             )
+            create_debug_screenshot(driver, download_path, worker_id, "failed_setup")
             time.sleep(retry_wait_time)
 
+    print(f"{worker_id}: Driver setup completed")
     return driver
 
 
 def worker(
     url_queue,
+    init_event,
     download_event,
     username: str,
     password: str,
@@ -159,7 +169,8 @@ def worker(
     driver = setup_webdriver_for_download(
         username, password, download_path, headless, worker_id
     )
-    print(f"{worker_id} started")
+    init_event.set()
+    completed_downloads = 0
     while True:
         url = url_queue.get()
         if url is None:
@@ -175,18 +186,49 @@ def worker(
         url_processed = False
         while not url_processed:
             try:
+                start_time = time.time()
                 download_region_chart_csv(driver, url, download_path)
+                duration = time.time() - start_time
+
                 download_event.set()
-                url_processed = True
                 while True:
                     # Wait until the number of pending downloads is less than the number of workers
                     # Otherwise, system might hang because of too many pending downloads
                     pending_downloads = get_number_of_pending_downloads(download_path)
                     if pending_downloads < no_of_workers:
                         break
+                url_processed = True
+                completed_downloads += 1
+
             except Exception as e:
                 print(f"{worker_id}: Error downloading from {url}: {e}")
+                create_debug_screenshot(
+                    driver, download_path, worker_id, "download_error"
+                )
                 print("Retrying...")
+
+        if completed_downloads % 100 == 0:
+            # for some reason, the driver runs out of memory after many downloads
+            print(
+                f"{worker_id}: Downloaded {completed_downloads} charts, restarting driver to avoid memory leak"
+            )
+            driver.quit()
+            driver = setup_webdriver_for_download(
+                username, password, download_path, headless, worker_id
+            )
+
+
+def create_debug_screenshot(
+    driver: webdriver, download_path: str, worker_id: str, desc: str
+):
+    driver.save_screenshot(
+        os.path.join(
+            download_path,
+            "..",
+            "screenshots",
+            f"{worker_id}_{desc}_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.png",
+        )
+    )
 
 
 def remove_incomplete_downloads(path: str = "."):
@@ -207,6 +249,41 @@ def get_number_of_pending_downloads(path: str = "."):
     return len(pending_downloads)
 
 
+def url_feeder(url_queue, download_urls, init_event, num_workers):
+    # You might wonder why this is used
+    # The reason is that I wanted to have some kind of 'rate-limiting' mechanism
+    # If I just put all the URLs in the queue at once, the workers would start downloading them all at once
+    # This would either cause the system to hang because of too many pending downloads OR
+    # cause the Spotify server to block my IP because of too many requests
+
+    # workers_left_to_init = num_workers
+    # while workers_left_to_init > 0:
+    #     init_event.wait()
+    #     init_event.clear()
+    #     print(f"{workers_left_to_init} workers left to initialize")
+    #     workers_left_to_init -= 1
+    # print("All workers initialized, starting to feed urls")
+
+    init_event.wait()
+    print("At least one worker ready to receive URLs, starting to feed...")
+
+    # using chunks of size MAX_QUEUE_SIZE to avoid queue hang issue (see comment for MAX_QUEUE_SIZE)
+    url_chunks = split_into_chunks_of_size(download_urls, MAX_QUEUE_SIZE)
+    for chunk in url_chunks:
+        for url in chunk:
+            random_sleep = random.uniform(0.05, 0.3)
+            time.sleep(random_sleep)
+            url_queue.put(url)
+
+        # queue must never grow beyond MAX_QUEUE_SIZE - this is my hacky way of verifying that
+        while True:
+            if url_queue.empty():
+                break
+    # Send a sentinel value to tell the workers to stop
+    for _ in range(num_processes):
+        url_queue.put(None)
+
+
 def download_charts(
     download_urls: list,
     num_processes: int,
@@ -215,9 +292,8 @@ def download_charts(
     download_path: str,
     headless: bool = True,
 ):
-    max_queue_size = 32767  # size limit for queues in MacOS X https://stackoverflow.com/a/56379621/13727176 - when trying to add more values to the queue (via .put() in a for loop), the code would hang
-    url_queue = multiprocessing.Queue(max_queue_size)
-
+    url_queue = multiprocessing.Queue(MAX_QUEUE_SIZE)
+    init_event = multiprocessing.Event()
     download_event = multiprocessing.Event()
 
     pool = multiprocessing.Pool(
@@ -225,6 +301,7 @@ def download_charts(
         initializer=worker,
         initargs=(
             url_queue,
+            init_event,
             download_event,
             username,
             password,
@@ -234,33 +311,29 @@ def download_charts(
         ),
     )
 
-    url_chunks = split_into_chunks_of_size(
-        download_urls, max_queue_size - num_processes
+    # Start the url feeder thread
+    url_feeder_thread = threading.Thread(
+        target=url_feeder, args=(url_queue, download_urls, init_event, num_processes)
     )
+    url_feeder_thread.start()
+    urls_left_to_download = len(download_urls)
 
     with tqdm(total=len(download_urls), desc="downloaded charts") as pbar:
         current = time.time()
-        for chunk in url_chunks:
-            for url in chunk:
-                url_queue.put(url)
-
-            # Wait for all processes to finish
-            while not url_queue.empty():
-                download_event.wait()
-                download_event.clear()
-                pbar.update(1)
-                if pbar.n % 60 == 0:
-                    previous = current
-                    current = time.time()
-                    time_passed = current - previous
-                    print(
-                        "Processed last 60 URLs in {:.2f} seconds".format(time_passed)
-                    )
-                    print(f"That's {60/time_passed} URLs per second")
-
-    # Add a sentinel value for each process to signal that there are no more tasks to process
-    for _ in range(num_processes):
-        url_queue.put(None)
+        while urls_left_to_download > 0:
+            download_event.wait()
+            download_event.clear()
+            pbar.update(1)
+            if pbar.n % 60 == 0:
+                previous = current
+                current = time.time()
+                time_passed = current - previous
+                print("Processed last 60 URLs in {:.2f} seconds".format(time_passed))
+                print(f"That's {60/time_passed} URLs per second")
+                print(
+                    f"ETA (assuming data-processing rate remains the same): {timedelta(seconds=(urls_left_to_download/(60/time_passed)))}"
+                )
+            urls_left_to_download -= 1
 
     pool.close()
     pool.join()
