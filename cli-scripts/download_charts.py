@@ -148,7 +148,6 @@ def setup_webdriver_for_download(
             print(
                 f"{worker_id}: Error in driver setup. Trying again in {retry_wait_time} seconds..."
             )
-            create_debug_screenshot(driver, download_path, worker_id, "failed_setup")
             time.sleep(retry_wait_time)
 
     print(f"{worker_id}: Driver setup completed")
@@ -200,9 +199,6 @@ def worker(
 
             except Exception as e:
                 print(f"{worker_id}: Error downloading from {url}: {e}")
-                create_debug_screenshot(
-                    driver, download_path, worker_id, "download_error"
-                )
                 print("Retrying...")
 
         # for some reason, the driver runs out of memory after too many downloads
@@ -216,19 +212,6 @@ def worker(
             driver = setup_webdriver_for_download(
                 username, password, download_path, headless, worker_id
             )
-
-
-def create_debug_screenshot(
-    driver: webdriver, download_path: str, worker_id: str, desc: str
-):
-    driver.save_screenshot(
-        os.path.join(
-            download_path,
-            "..",
-            "screenshots",
-            f"{worker_id}_{desc}_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.png",
-        )
-    )
 
 
 def remove_incomplete_downloads(path: str = "."):
