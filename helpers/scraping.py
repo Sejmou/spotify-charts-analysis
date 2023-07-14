@@ -7,7 +7,7 @@ import selenium.webdriver.support.expected_conditions as EC
 import time
 from urllib.parse import quote
 import inquirer
-
+from datetime import datetime
 
 login_page_url = "https://accounts.spotify.com/en/login"
 
@@ -85,3 +85,12 @@ def get_spotify_credentials():
             password = answers["password"]
 
     return username, password
+
+
+def save_debug_screenshot(driver: webdriver, dirpath: str, worker_id: str, desc: str):
+    driver.save_screenshot(
+        os.path.join(
+            dirpath,
+            f"{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}_{worker_id}_{desc}.png",
+        )
+    )
