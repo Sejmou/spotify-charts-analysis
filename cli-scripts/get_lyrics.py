@@ -154,9 +154,7 @@ def get_lyrics_for_track_ids(
 
 def get_existing_data(path):
     if os.path.exists(path):
-        existing_data = (
-            pd.read_parquet(path) if output_format == "parquet" else pd.read_csv(path)
-        )
+        existing_data = pd.read_parquet(path)
     else:
         existing_data = pd.DataFrame(columns=output_columns)
         output_dir = os.path.dirname(path)
@@ -176,10 +174,7 @@ def write_track_lyrics(lyrics, path):
             ),
         ],
     )
-    if path.endswith(".parquet"):
-        output.to_parquet(path, index=False)
-    else:
-        output.to_csv(path, index=False)
+    output.to_parquet(path, index=False)
 
 
 if __name__ == "__main__":
@@ -188,7 +183,7 @@ if __name__ == "__main__":
         "-i",
         "--input_path",
         type=str,
-        help="Path to a .csv or .parquet file containing Spotify track IDs (in a column named 'track_id'))",
+        help="Path to a .parquet file containing Spotify track IDs (in a column named 'track_id'))",
         required=True,
     )
     parser.add_argument(
@@ -215,30 +210,26 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    input_path = args.input_path
-    if input_path.endswith(".csv"):
-        input_df = pd.read_csv(input_path)
-        input_format = "csv"
-    elif input_path.endswith(".parquet"):
-        input_df = pd.read_parquet(input_path)
-        input_format = "parquet"
-    else:
-        raise ValueError(
-            f"Input file '{input_path}' must be either a .csv or .parquet file"
-        )
+    # remembering myself to fix this before running
+    raise NotImplementedError(
+        "There is an error in the worker code (silently skipping tracks), FIX IT before running this!"
+    )
 
-    track_ids = (input_df)["track_id"].unique().tolist()
-    print(f"Found {len(track_ids)} unique track IDs in '{input_path}'")
+    input_path = args.input_path
+    try:
+        input_df = pd.read_parquet(input_path)
+    except Exception:
+        raise ValueError(f"Input file '{input_path}' must be a .parquet file")
+
+    try:
+        track_ids = (input_df)["track_id"].unique().tolist()
+        print(f"Found {len(track_ids)} unique track IDs in '{input_path}'")
+    except Exception:
+        raise ValueError(
+            f"Input file '{input_path}' must contain a column named 'track_id'"
+        )
 
     output_path = args.output_path
-    if output_path.endswith(".csv"):
-        output_format = "csv"
-    elif output_path.endswith(".parquet"):
-        output_format = "parquet"
-    else:
-        raise ValueError(
-            f"Output file '{output_path}' must be either a .csv or .parquet file"
-        )
 
     existing_data = get_existing_data(output_path)
 

@@ -1,5 +1,6 @@
 # Fetches credits information for tracks on Spotify which is not available via Spotify's API.
 # Uses Selenium to scrape the Spotify web player for the data.
+# NOTE: This script occacionally crashes for larger numbers of tracks. I don't know why.
 
 import argparse
 import multiprocessing
@@ -10,10 +11,12 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 import pandas as pd
-from helpers.scraping import accept_cookies
+from helpers.scraping import accept_cookies, save_debug_screenshot
 import multiprocessing
 from typing import List
 import time
+from datetime import timedelta
+import psutil
 
 start_page_url = "https://open.spotify.com/"
 output_columns = ["track_id", "performers", "songwriters", "producers", "sources"]
@@ -71,7 +74,7 @@ def get_credits(driver: webdriver.Firefox, track_id: str):
     more_button.click()
 
     credits_button = WebDriverWait(driver, 5).until(
-        EC.presence_of_element_located(
+        EC.element_to_be_clickable(
             (
                 By.XPATH,
                 f"//div[@id='context-menu']//*[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'credits')]",
@@ -90,15 +93,20 @@ def get_credits(driver: webdriver.Firefox, track_id: str):
         driver, "Produced by"
     )
 
-    sources = (
-        WebDriverWait(driver, 5)
-        .until(
-            EC.presence_of_all_elements_located((By.XPATH, "//div[@role='dialog']//p"))
-        )[-1]
-        .text.strip()
-        .split("Source: ")[1]
-        .split(", ")
-    )
+    try:
+        sources = (
+            WebDriverWait(driver, 5)
+            .until(
+                EC.presence_of_all_elements_located(
+                    (By.XPATH, "//div[@role='dialog']//p")
+                )
+            )[-1]
+            .text.strip()
+            .split("Source: ")[1]
+            .split(", ")
+        )
+    except IndexError:
+        sources = []  # No sources exist - possible!
 
     return track_id, performers, songwriters, producers, sources
 
@@ -122,81 +130,108 @@ def setup_webdriver(headless: bool = True):
             time.sleep(5)
 
 
-def worker(track_id_queue, result_queue):
-    driver = setup_webdriver()
-    try:
-        while True:
-            track_id = track_id_queue.get()
-            if track_id is None:
-                # Received a sentinel value, no more tasks to process
+import multiprocessing
+import psutil
+
+
+import multiprocessing
+import psutil
+
+
+def worker(track_id_queue, result_queue, headless: bool = True):
+    worker_id = multiprocessing.current_process().name
+    print(f"{worker_id} started")
+    driver = setup_webdriver(headless)
+    processed_count = 0  # Counter for processed track IDs
+    memory_check_interval = 10  # Interval for memory usage check
+    while True:
+        track_id = track_id_queue.get()
+        if track_id is None:
+            # Received a sentinel value, no more tasks to process
+            driver.quit()
+            result_queue.put(None)
+            break
+
+        track_processed = False
+        while not track_processed:
+            try:
+                track_credits = get_credits(driver, track_id)
+                result_queue.put(track_credits)
+                track_processed = True
+            except Exception as e:
+                print(f"Error in {worker_id}: {e}")
+                save_debug_screenshot(driver, "data/screenshots", worker_id, track_id)
+
+        processed_count += 1
+
+        # Check memory usage after every 'memory_check_interval' processed track IDs
+        if processed_count % memory_check_interval == 0:
+            memory_usage = psutil.Process().memory_percent()
+            print(
+                f"{worker_id} - Processed {processed_count} track IDs.\nMemory Usage: {memory_usage}%"
+            )
+            if memory_usage > 70:
+                print("Memory usage is too high, restarting webdriver...")
                 driver.quit()
-                result_queue.put(None)
-                break
-            track_credits = get_credits(driver, track_id)
-            result_queue.put(track_credits)
-    except Exception as e:
-        print(f"Error in worker: {e}")
-        driver.quit()
-        print("Restarting worker...")
-        worker(track_id_queue, result_queue)
+                driver = setup_webdriver(headless)
+
+    print(f"{worker_id} finished")
 
 
-def get_credits_for_track_ids(track_ids, num_processes, output_file, chunk_size=100):
-    max_queue_size = 32767  # size limit for queues in MacOS X https://stackoverflow.com/a/56379621/13727176 - when trying to add more values to the queue (via .put() in a for loop), the code would hang
+def get_credits_for_track_ids(
+    track_ids: list,
+    num_processes: int,
+    output_file: str,
+    storage_interval: int,
+    headless: bool = True,
+):
+    track_id_queue = multiprocessing.Queue()
+    credits_queue = multiprocessing.Queue()
+    pool = multiprocessing.Pool(
+        processes=num_processes,
+        initializer=worker,
+        initargs=(track_id_queue, credits_queue, headless),
+    )
 
-    track_id_queue = multiprocessing.Queue(max_queue_size)
-    credits_queue = multiprocessing.Queue(max_queue_size)
+    track_id_chunks = split_into_chunks_of_size(track_ids, num_processes)
 
     with tqdm(total=len(track_ids), desc="track_ids") as pbar:
-        # Create a process pool with the specified number of processes
-        pool = multiprocessing.Pool(
-            processes=num_processes,
-            initializer=worker,
-            initargs=(track_id_queue, credits_queue),
-        )
-
-        track_id_chunks = split_into_chunks_of_size(
-            track_ids, max_queue_size - num_processes
-        )
-
-        now = time.time()
-
+        intermediate_results = []
+        current = time.time()
         for chunk in track_id_chunks:
-            # Add tasks to the task queue
             for track_id in chunk:
                 track_id_queue.put(track_id)
 
-            # Add sentinel values to indicate the end of tasks for each process
-            for _ in range(num_processes):
-                track_id_queue.put(None)
-
-            # Close the input queue to prevent further task addition
-            track_id_queue.close()
-
             # Read results from the result queue
-            intermediate_results = []
-            finished_processes = 0
-            while finished_processes < num_processes:
+
+            results_left_to_process = len(chunk)
+            while results_left_to_process > 0:
                 result = credits_queue.get()
-                if result is None:
-                    # Received a sentinel value, one process has finished
-                    finished_processes += 1
-                    continue
                 intermediate_results.append(result)
                 pbar.update(1)
-                if (
-                    len(intermediate_results) == chunk_size
-                    or finished_processes == num_processes
-                ):
+                results_left_to_process -= 1
+
+                if len(intermediate_results) % storage_interval == 0:
                     # Write results to file
                     write_track_credits(intermediate_results, output_file)
                     intermediate_results = []
-                    print(f"Chunk processing took {time.time() - now} seconds")
-                    now = time.time()
+                    previous = current
+                    current = time.time()
+                    processing_time = current - previous
+                    print(
+                        f"Processing of last {storage_interval} track IDs took {processing_time} seconds"
+                    )
+                    print(f"Stored intermediate results")
+                    credits_per_second = storage_interval / processing_time
+                    print(f"Processing rate: {credits_per_second} credits per second")
+                    print(
+                        f"ETA (assuming data-processing rate stays the same): {timedelta(seconds=(len(track_ids) - pbar.n) / credits_per_second)}"
+                    )
 
+    # Add sentinel values to indicate the end of tasks for each process
+    for _ in range(num_processes):
+        track_id_queue.put(None)
     write_track_credits(intermediate_results, output_file)
-    print(f"Done")
-    credits_queue.close()
 
     # Wait for all processes to finish
     pool.close()
@@ -205,9 +240,7 @@ def get_credits_for_track_ids(track_ids, num_processes, output_file, chunk_size=
 
 def get_existing_data(path):
     if os.path.exists(path):
-        existing_data = (
-            pd.read_parquet(path) if output_format == "parquet" else pd.read_csv(path)
-        )
+        existing_data = pd.read_parquet(path)
     else:
         existing_data = pd.DataFrame(columns=output_columns)
         output_dir = os.path.dirname(path)
@@ -227,10 +260,7 @@ def write_track_credits(credits, path):
             ),
         ],
     )
-    if path.endswith(".parquet"):
-        output.to_parquet(path, index=False)
-    else:
-        output.to_csv(path, index=False)
+    output.to_parquet(path, index=False)
 
 
 if __name__ == "__main__":
@@ -239,7 +269,7 @@ if __name__ == "__main__":
         "-i",
         "--input_path",
         type=str,
-        help="Path to a .csv or .parquet file containing Spotify track IDs (in a column named 'track_id'))",
+        help="Path to a .parquet file containing Spotify track IDs (in a column named 'track_id'))",
         required=True,
     )
     parser.add_argument(
@@ -257,42 +287,38 @@ if __name__ == "__main__":
         default=multiprocessing.cpu_count(),
     )
     parser.add_argument(
-        "-c",
-        "--chunk_size",
+        "-s",
+        "--storage_interval",
         type=int,
-        help="Number of track_ids to process in each chunk. After a chunk is done processing, intermediate results will be written to the output file. Defaults to 100.",
-        default=100,
+        help="Number of track_ids after which intermediate results will be written to the output file.",
+        default=60,
+    )
+    parser.add_argument(
+        "--no-headless",
+        dest="headless",
+        action="store_false",
+        help="If set, the browser will be visible during scraping. Useful for debugging.",
     )
 
     args = parser.parse_args()
 
     input_path = args.input_path
-    if input_path.endswith(".csv"):
-        input_df = pd.read_csv(input_path)
-        input_format = "csv"
-    elif input_path.endswith(".parquet"):
+    try:
         input_df = pd.read_parquet(input_path)
-        input_format = "parquet"
-    else:
-        raise ValueError(
-            f"Input file '{input_path}' must be either a .csv or .parquet file"
-        )
+    except Exception:
+        raise ValueError(f"Input file '{input_path}' must be a .parquet file")
 
-    track_ids = (input_df)["track_id"].unique().tolist()
-    print(f"Found {len(track_ids)} unique track IDs in '{input_path}'")
+    try:
+        track_ids = (input_df)["track_id"].unique().tolist()
+        print(f"Found {len(track_ids)} unique track IDs in '{input_path}'")
+    except Exception:
+        raise ValueError(
+            f"Input file '{input_path}' must contain a column named 'track_id'"
+        )
 
     output_path = args.output_path
-    if output_path.endswith(".csv"):
-        output_format = "csv"
-    elif output_path.endswith(".parquet"):
-        output_format = "parquet"
-    else:
-        raise ValueError(
-            f"Output file '{output_path}' must be either a .csv or .parquet file"
-        )
 
     existing_data = get_existing_data(output_path)
-
     existing_track_ids = set(existing_data["track_id"].unique().tolist())
 
     if len(existing_data) > 0:
@@ -310,11 +336,13 @@ if __name__ == "__main__":
     num_processes = min(args.processes, len(track_ids))
     pool = multiprocessing.Pool(num_processes)
     print(f"Using {num_processes} webdrivers (browser instances) in parallel")
-    chunk_size = args.chunk_size
 
+    storage_interval = args.storage_interval
     print(f"Fetching credits for {len(track_ids)} tracks...")
     print(
-        f"Data will be processed in chunks of {chunk_size}; intermediate results are written back to '{output_path}' after each chunk has been processed"
+        f"Intermediate results will be written to '{output_path}' after every {storage_interval} tracks"
     )
 
-    get_credits_for_track_ids(track_ids, num_processes, output_path, chunk_size)
+    get_credits_for_track_ids(
+        track_ids, num_processes, output_path, storage_interval, headless=args.headless
+    )
