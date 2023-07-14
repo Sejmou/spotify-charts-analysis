@@ -18,6 +18,7 @@ setup(
         "selenium",
         "inquirer",
         "spotipy",
+        "aiohttp",
     ],
     packages=find_packages(),
     classifiers=[
