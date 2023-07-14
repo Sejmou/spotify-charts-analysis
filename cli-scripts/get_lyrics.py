@@ -1,180 +1,40 @@
-# Fetches lyrics for tracks on Spotify which is not available via Spotify's API.
-# Uses Selenium to scrape the Spotify web player for the data.
-
+import json
+import asyncio
+import aiohttp
 import argparse
-import multiprocessing
+from helpers.scraping import get_lyrics_api_url, get_internal_api_request_headers
+from helpers.util import split_into_chunks_of_size
+import pandas as pd
 from tqdm import tqdm
 import os
-from selenium import webdriver
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support import expected_conditions as EC
-import pandas as pd
-from helpers.scraping import login_and_accept_cookies
-import multiprocessing
-from typing import List
-import time
-from helpers.scraping import get_spotify_credentials
-
-login_page_url = "https://open.spotify.com/"
-output_columns = ["track_id", "lyrics"]
+import random
 
 
-def split_into_chunks_of_size(list_to_split: List[str], chunk_size: int):
-    return [
-        list_to_split[i : i + chunk_size]
-        for i in range(0, len(list_to_split), chunk_size)
-    ]
+async def send_request(session, url, headers):
+    async with session.get(url, headers=headers) as response:
+        # for some reason, internal API returns response with text content type, even though the response is JSON
+        response_text = await response.text()
+        return response_text
 
 
-def get_element_matching_xpath(driver, xpath):
-    wait = WebDriverWait(driver, 5)
-    element = wait.until(EC.presence_of_element_located((By.XPATH, xpath)))
-    return element
+async def async_main(urls, headers):
+    async with aiohttp.ClientSession() as session:
+        tasks = []
+        for url in urls:
+            task = asyncio.create_task(send_request(session, url, headers))
+            tasks.append(task)
 
+        responses = await asyncio.gather(*tasks)
 
-def get_lyrics(driver: webdriver.Firefox, track_id: str):
-    track_page_url = f"https://open.spotify.com/track/{track_id}"
-    driver.get(track_page_url)
+        for i, response in enumerate(responses):
+            try:
+                responses[i] = json.loads(response)
+            except Exception:
+                # print(f"Failed to parse response {i}: {response}")
+                responses[i] = {}
 
-    h2_element = get_element_matching_xpath(driver, "//h2[contains(text(), 'Lyrics')]")
-    parent_element = h2_element.find_element(By.XPATH, "..")
-    elements = parent_element.find_elements(By.XPATH, "./*")[
-        1:
-    ]  # skip the first element, which is the h2 element
-    sibling_texts = [element.text for element in elements]
-
-    lyrics_str = "\n".join(sibling_texts)
-
-    return track_id, lyrics_str
-
-
-def setup_webdriver(username: str, password: str, headless: bool = True):
-    while True:
-        try:
-            options = webdriver.FirefoxOptions()
-            options.set_preference("intl.accept_languages", "en-GB")
-            if headless:
-                options.add_argument("-headless")
-            driver = webdriver.Firefox(options=options)
-
-            driver.get(login_page_url)
-            after_login_url = "https://open.spotify.com/"
-            login_and_accept_cookies(driver, username, password, after_login_url)
-
-            wait = WebDriverWait(driver, 5)
-            wait.until(EC.url_contains(after_login_url))
-
-            return driver
-        except Exception as e:
-            print(f"Error starting webdriver: {e}")
-            print("Retrying in 5 seconds...")
-            time.sleep(5)
-
-
-def worker(track_id_queue, result_queue, username, password):
-    driver = setup_webdriver(username, password)
-    try:
-        while True:
-            track_id = track_id_queue.get()
-            if track_id is None:
-                # Received a sentinel value, no more tasks to process
-                driver.quit()
-                result_queue.put(None)
-                break
-            lyrics = get_lyrics(driver, track_id)
-            result_queue.put(lyrics)
-    except Exception as e:
-        print(f"Error in worker: {e}")
-        driver.quit()
-        print("Restarting worker...")
-        worker(track_id_queue, result_queue, username, password)
-
-
-def get_lyrics_for_track_ids(
-    track_ids, num_processes, username, password, output_file, chunk_size=100
-):
-    max_queue_size = 32767  # size limit for queues in MacOS X https://stackoverflow.com/a/56379621/13727176 - when trying to add more values to the queue (via .put() in a for loop), the code would hang
-
-    track_id_queue = multiprocessing.Queue(max_queue_size)
-    lyrics_queue = multiprocessing.Queue(max_queue_size)
-
-    with tqdm(total=len(track_ids), desc="track_ids") as pbar:
-        # Create a process pool with the specified number of processes
-        pool = multiprocessing.Pool(
-            processes=num_processes,
-            initializer=worker,
-            initargs=(track_id_queue, lyrics_queue, username, password),
-        )
-
-        track_id_chunks = split_into_chunks_of_size(
-            track_ids, max_queue_size - num_processes
-        )
-
-        for chunk in track_id_chunks:
-            # Add tasks to the task queue
-            for track_id in chunk:
-                track_id_queue.put(track_id)
-
-            # Add sentinel values to indicate the end of tasks for each process
-            for _ in range(num_processes):
-                track_id_queue.put(None)
-
-            # Close the input queue to prevent further task addition
-            track_id_queue.close()
-
-            # Read results from the result queue
-            intermediate_results = []
-            finished_processes = 0
-            while finished_processes < num_processes:
-                result = lyrics_queue.get()
-                if result is None:
-                    # Received a sentinel value, one process has finished
-                    finished_processes += 1
-                    print(
-                        f"Process finished, {num_processes - finished_processes} remaining"
-                    )
-                    continue
-                intermediate_results.append(result)
-                pbar.update(1)
-                if (
-                    len(intermediate_results) == chunk_size
-                    or finished_processes == num_processes
-                ):
-                    # Write results to file
-                    write_track_lyrics(intermediate_results, output_file)
-                    intermediate_results = []
-
-    lyrics_queue.close()
-
-    # Wait for all processes to finish
-    pool.close()
-    pool.join()
-
-
-def get_existing_data(path):
-    if os.path.exists(path):
-        existing_data = pd.read_parquet(path)
-    else:
-        existing_data = pd.DataFrame(columns=output_columns)
-        output_dir = os.path.dirname(path)
-        if not os.path.exists(output_dir):
-            os.makedirs(output_dir)
-    return existing_data
-
-
-def write_track_lyrics(lyrics, path):
-    existing_data = get_existing_data(path)
-    output = pd.concat(
-        [
-            existing_data,
-            pd.DataFrame(
-                lyrics,
-                columns=output_columns,
-            ),
-        ],
-    )
-    output.to_parquet(path, index=False)
+        valid_responses = [r for r in responses if r != {}]
+        return valid_responses
 
 
 if __name__ == "__main__":
@@ -190,30 +50,11 @@ if __name__ == "__main__":
         "-o",
         "--output_path",
         type=str,
-        help="Path where output file with track lyrics will be stored. If it already exists, it will also be used to resume the data fetching process (skipping track_ids that are already contained in it).",
+        help="Path where the JSONL file containing the lyric data will be saved (this file path will also be used to resume the data fetching process (skipping track_ids that are already contained in it).",
         required=True,
-    )
-    parser.add_argument(
-        "-p",
-        "--processes",
-        type=int,
-        help="Number of parallel processes (browser instances) to use for scraping the data. Defaults to number of available CPU cores.",
-        default=multiprocessing.cpu_count(),
-    )
-    parser.add_argument(
-        "-c",
-        "--chunk_size",
-        type=int,
-        help="Number of track_ids to process in each chunk. After a chunk is done processing, intermediate results will be written to the output file. Defaults to 100.",
-        default=100,
     )
 
     args = parser.parse_args()
-
-    # remembering myself to fix this before running
-    raise NotImplementedError(
-        "There is an error in the worker code (silently skipping tracks), FIX IT before running this!"
-    )
 
     input_path = args.input_path
     try:
@@ -230,35 +71,96 @@ if __name__ == "__main__":
         )
 
     output_path = args.output_path
+    if os.path.exists(output_path):
+        # load ids from the existing JSON objects in the file
+        with open(output_path, "r") as f:
+            existing_data = [json.loads(line) for line in f.readlines()]
+            existing_track_ids = set([obj["trackId"] for obj in existing_data])
+            print(
+                f"Found {len(existing_track_ids)} existing track IDs in '{output_path}'"
+            )
+            track_ids = [
+                track_id for track_id in track_ids if track_id not in existing_track_ids
+            ]
+            print(f"Fetching data for {len(track_ids)} track IDs")
+    else:
+        # create output file and required subdirectories if they don't exist
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        open(output_path, "w").close()
 
-    existing_data = get_existing_data(output_path)
+    max_requests = (
+        32  # cannot send too many requests at once (internal API will fail too often)
+    )
+    track_id_chunks = split_into_chunks_of_size(track_ids, max_requests)
 
-    existing_track_ids = set(existing_data["track_id"].unique().tolist())
+    def pick_random_track_id_for_request_header_fetching():
+        # not sure if this is necessary, but maybe Spotify API will block large volumes of requests earlier if they originate from the same track ID
+        return random.choice(track_ids)
 
-    if len(existing_data) > 0:
-        track_ids = [
-            track_id for track_id in track_ids if track_id not in existing_track_ids
-        ]
-        print(
-            f"Skipping {len(existing_data)} track IDs already contained in '{output_path}'"
-        )
-
-    if len(track_ids) == 0:
-        print("All track IDs already contained in output file. Nothing to do.")
-        exit(0)
-
-    username, password = get_spotify_credentials()
-
-    num_processes = min(args.processes, len(track_ids))
-    pool = multiprocessing.Pool(num_processes)
-    print(f"Using {num_processes} webdrivers (browser instances) in parallel")
-    chunk_size = args.chunk_size
-
-    print(f"Fetching lyrics for {len(track_ids)} tracks...")
     print(
-        f"Data will be processed in chunks of {chunk_size}; intermediate results are written back to '{output_path}' after each chunk has been processed"
+        f"Processing {len(track_id_chunks)} track ID chunks of (maximum) size {max_requests}"
     )
+    with tqdm(total=len(track_id_chunks)) as pbar:
+        for track_ids in track_id_chunks:
+            responses_saved = False
+            while not responses_saved:
+                ids_to_process = len(track_ids)
+                urls = [get_lyrics_api_url(track_id) for track_id in track_ids]
+                headers = get_internal_api_request_headers(
+                    pick_random_track_id_for_request_header_fetching()
+                )
+                valid_responses = asyncio.run(async_main(urls=urls, headers=headers))
 
-    get_lyrics_for_track_ids(
-        track_ids, num_processes, username, password, output_path, chunk_size
-    )
+                invalid_response_count = ids_to_process - len(valid_responses)
+                while invalid_response_count > 0:
+                    previous_invalid_response_count = invalid_response_count
+                    # print(
+                    #     f"Encountered {invalid_response_count} invalid responses. Retrying..."
+                    # )
+                    track_ids_with_valid_responses = [
+                        response["trackUri"].split(":")[2]
+                        for response in valid_responses
+                    ]
+                    track_ids = [
+                        track_id
+                        for track_id in track_ids
+                        if track_id not in track_ids_with_valid_responses
+                    ]
+                    # print(f"Retrying with remaining {len(track_ids)} track IDs")
+                    urls = [get_lyrics_api_url(track_id) for track_id in track_ids]
+                    headers = get_internal_api_request_headers(
+                        pick_random_track_id_for_request_header_fetching()
+                    )
+                    responses_next_attempt = asyncio.run(
+                        async_main(urls=urls, headers=headers)
+                    )
+                    valid_responses.extend(responses_next_attempt)
+                    invalid_response_count = ids_to_process - len(valid_responses)
+                    print(
+                        invalid_response_count,
+                        previous_invalid_response_count,
+                    )
+                    if invalid_response_count == previous_invalid_response_count:
+                        print(
+                            f"Failed to process {invalid_response_count} track IDs. Skipping them and writing to file..."
+                        )
+                        # write track IDs with missing responses to file (same directory as output_path)
+                        with open(
+                            os.path.join(
+                                os.path.dirname(output_path),
+                                f"missing_lyrics_responses.txt",
+                            ),
+                            "a",
+                        ) as f:
+                            for track_id in track_ids:
+                                f.write(f"{track_id}\n")
+                        invalid_response_count = 0
+
+                    responses_saved = True
+
+                # Save all valid responses by appending to JSONL file (i.e. file with one JSON object per line) in provided output_path
+                with open(output_path, "a") as f:
+                    for response in valid_responses:
+                        f.write(json.dumps(response) + "\n")
+                # print(f"Saved {len(valid_responses)} responses to '{output_path}'")
+                pbar.update(1)
