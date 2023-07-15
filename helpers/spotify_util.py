@@ -42,6 +42,26 @@ def create_spotipy_client():
     )
 
 
+def get_spotify_track_link(id: str):
+    return f"https://open.spotify.com/track/{id}"
+
+
+def get_spotify_album_link(id: str):
+    return f"https://open.spotify.com/album/{id}"
+
+
+def get_spotify_artist_link(id: str):
+    return f"https://open.spotify.com/artist/{id}"
+
+
+def get_id_from_spotify_uri(uri: str):
+    return uri.split(":")[-1]
+
+
+def get_track_uri_from_id(track_id: str):
+    return f"spotify:track:{track_id}"
+
+
 if __name__ == "__main__":
     sp = create_spotipy_client()
     print('Searching for "Kanye" on Spotify')

@@ -2,7 +2,7 @@ import argparse
 from tqdm import tqdm
 import os
 import pandas as pd
-from helpers.spotipy_util import create_spotipy_client
+from helpers.spotify_util import create_spotipy_client
 from helpers.util import (
     split_into_chunks_of_size,
     create_data_source_and_timestamp_file,

@@ -12,6 +12,19 @@
         "data/top200_2022.parquet",
         "data/songwriters_top200_2022.parquet"
       ]
+    },
+    {
+      "name": "Internal API script",
+      "type": "python",
+      "request": "launch",
+      "program": "${file}",
+      "justMyCode": true,
+      "args": [
+        "-i",
+        "data/top200_01-2017_06-2023/charts.parquet",
+        "-r",
+        "lyrics"
+      ]
     }
   ]
 }

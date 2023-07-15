@@ -9,6 +9,9 @@ from urllib.parse import quote
 import inquirer
 from datetime import datetime
 import json
+import random
+from typing import List
+from helpers.spotify_util import get_spotify_track_link
 
 login_page_url = "https://accounts.spotify.com/en/login"
 
@@ -120,12 +123,18 @@ def get_lyrics_api_url(track_id: str):
     return f"{INTERNAL_API_BASE_URL}color-lyrics/v2/track/{track_id}"
 
 
-def get_internal_api_request_headers(track_id: str):
+def get_internal_api_request_headers(track_ids: List[str], credentials: tuple):
     """
     Gets the headers from a request to the internal Spotify API. We can use these headers to make our own requests to that API, also for other tracks.
+
+    Args:
+        track_ids: A list of track IDs to use for the request. A random one will be chosen.
+        credentials: A tuple containing the Spotify username and password.
+
+    Uses a random track ID from the provided IDs to do the stuff that is required to get the headers. Check the function implemntation for more details.
     """
 
-    def setup_webdriver(headless: bool = True):
+    def setup_webdriver(headless: bool = True, credentials: tuple = None):
         while True:
             try:
                 options = webdriver.ChromeOptions()
@@ -136,28 +145,27 @@ def get_internal_api_request_headers(track_id: str):
                     options.add_argument("--headless=new")
                 driver = webdriver.Chrome(options=options)
 
-                track_page_url = f"https://open.spotify.com/track/{track_id}"
-                driver.get(track_page_url)
+                if credentials is not None:
+                    username, password = credentials
+                    login_and_accept_cookies(
+                        driver,
+                        username,
+                        password,
+                        after_login_url=get_spotify_track_link(
+                            random.choice(track_ids)
+                        ),
+                    )
+                    print("Logged in successfully")
 
                 return driver
             except Exception as e:
                 print(
                     f"Error starting webdriver for fetching internal API request headers: {e}"
                 )
-                print("Retrying in 5 seconds...")
-                time.sleep(5)
-
-    # def click_lyrics_button(driver: webdriver.Chrome):
-    #     """
-    #     Clicks the "Lyrics" button on the track page, which is only available if logged in (hence why I am not using this right now).
-
-    #     This causes a request to the internal Spotify API to be made, which we can then read the headers from
-    #     (and use them in requests to internal APIs for lyrics and track credits - potentially even more).
-    #     """
-    #     lyrics_button = get_element_with_att_and_val(
-    #         driver, "data-testid", "lyrics-button"
-    #     )
-    #     lyrics_button.click()
+                print("Retrying...")
+                time.sleep(
+                    1
+                )  # not sure if this is necessary or would ever change anything lol
 
     def open_credits_popup(driver: webdriver.Chrome):
         more_button = get_element_with_att_and_val(driver, "data-testid", "more-button")
@@ -168,7 +176,7 @@ def get_internal_api_request_headers(track_id: str):
         )
         credits_button.click()
 
-    def is_internal_api_request(log_entry, track_id=track_id):
+    def is_internal_api_request(log_entry, track_id):
         """
         Detects whether a log entry is a request to the internal Spotify API. We can use this request's headers to make our own requests to the API.
         """
@@ -182,15 +190,29 @@ def get_internal_api_request_headers(track_id: str):
             )
         )
 
-    driver = setup_webdriver()
-    open_credits_popup(driver)
+    driver = setup_webdriver(credentials=credentials)
 
-    log_entries = driver.get_log("performance")
-    for entry in log_entries:
-        entry["message"] = json.loads(entry["message"])["message"]
+    headers = None
+    while headers is None:
+        # This may sometimes fail, not entirely sure why, but it seems to always work if we just retry once or twice with different track IDs.
+        try:
+            track_id = random.choice(track_ids)
+            track_page_url = get_spotify_track_link(track_id)
+            driver.get(track_page_url)
+            open_credits_popup(driver)
 
-    internal_request_log_entry = next(
-        e for e in log_entries if is_internal_api_request(e, track_id=track_id)
-    )
-    headers = internal_request_log_entry["message"]["params"]["request"]["headers"]
+            log_entries = driver.get_log("performance")
+            for entry in log_entries:
+                entry["message"] = json.loads(entry["message"])["message"]
+
+            internal_request_log_entry = next(
+                e for e in log_entries if is_internal_api_request(e, track_id=track_id)
+            )
+            headers = internal_request_log_entry["message"]["params"]["request"][
+                "headers"
+            ]
+        except Exception as e:
+            print(f"Error getting internal API request headers: {e}. Retrying...")
+
+    driver.quit()
     return headers
