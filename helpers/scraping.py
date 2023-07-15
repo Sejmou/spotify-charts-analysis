@@ -147,26 +147,35 @@ def get_internal_api_request_headers(track_id: str):
                 print("Retrying in 5 seconds...")
                 time.sleep(5)
 
-    def click_lyrics_button(driver: webdriver.Firefox):
-        """
-        Clicks the "Lyrics" button on the track page.
+    # def click_lyrics_button(driver: webdriver.Chrome):
+    #     """
+    #     Clicks the "Lyrics" button on the track page, which is only available if logged in (hence why I am not using this right now).
 
-        This causes a request to the internal Spotify API to be made, which we can then read the headers from
-        (and use them in requests to internal APIs for lyrics and track credits - potentially even more).
-        """
-        lyrics_button = get_element_with_att_and_val(
-            driver, "data-testid", "lyrics-button"
+    #     This causes a request to the internal Spotify API to be made, which we can then read the headers from
+    #     (and use them in requests to internal APIs for lyrics and track credits - potentially even more).
+    #     """
+    #     lyrics_button = get_element_with_att_and_val(
+    #         driver, "data-testid", "lyrics-button"
+    #     )
+    #     lyrics_button.click()
+
+    def open_credits_popup(driver: webdriver.Chrome):
+        more_button = get_element_with_att_and_val(driver, "data-testid", "more-button")
+        more_button.click()
+        credits_button = driver.find_element(
+            By.XPATH,
+            f"//div[@id='context-menu']//*[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'credits')]",
         )
-        lyrics_button.click()
+        credits_button.click()
 
-    def is_internal_api_request(log_entry):
+    def is_internal_api_request(log_entry, track_id=track_id):
         """
         Detects whether a log entry is a request to the internal Spotify API. We can use this request's headers to make our own requests to the API.
         """
         return (
             log_entry["message"]["method"] == "Network.requestWillBeSent"
             and log_entry["message"]["params"]["request"]["url"].startswith(
-                INTERNAL_API_BASE_URL
+                get_credits_api_url(track_id)
             )
             and log_entry["message"]["params"]["documentURL"].startswith(
                 "https://open.spotify.com/track/"
@@ -174,14 +183,14 @@ def get_internal_api_request_headers(track_id: str):
         )
 
     driver = setup_webdriver()
-    click_lyrics_button(driver)
+    open_credits_popup(driver)
 
     log_entries = driver.get_log("performance")
     for entry in log_entries:
         entry["message"] = json.loads(entry["message"])["message"]
 
     internal_request_log_entry = next(
-        e for e in log_entries if is_internal_api_request(e)
+        e for e in log_entries if is_internal_api_request(e, track_id=track_id)
     )
     headers = internal_request_log_entry["message"]["params"]["request"]["headers"]
     return headers
