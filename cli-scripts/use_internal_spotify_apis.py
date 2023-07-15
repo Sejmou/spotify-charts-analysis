@@ -6,6 +6,12 @@ Supports both parallel and sequential requests. However, there's a few caveats w
  - They are buggy, producing empty lines in some cases (haven't found the error yet). Still, loading the resulting .jsonl file into a DataFrame works fine with pandas so it's not a big deal. If you're bothered by this, just let ChatGPT write a script to remove empty lines lol
 
 Could try switching from parallel to sequential requests if the number of tracks to process is small
+
+Also, there's currently still an issue with the lyrics API: 
+it requires you to login with your Spotify account to get the necessary API request headers,
+it can happen that a particular IP/account/User Agent can get blocked if too many requests are sent
+
+however, if you find a way around that issue of obtaining the necessary headers yourself, you can also provide them in a JSON file via the --json_headers argument
 """
 
 import json
@@ -162,6 +168,11 @@ def get_existing_track_ids(jsonl_file_path: str):
     return track_ids
 
 
+def read_json(file_path: str):
+    with open(file_path, "r") as f:
+        return json.load(f)
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -184,6 +195,12 @@ if __name__ == "__main__":
         help='The type of resource to fetch. Must be either "credits" or "lyrics".',
         required=True,
     )
+    parser.add_argument(
+        "-j",
+        "--json_headers_path",
+        type=str,
+        help="Path to a JSON file containing the headers to be used for the requests.",
+    )
 
     args = parser.parse_args()
 
@@ -198,13 +215,6 @@ if __name__ == "__main__":
         raise ValueError(
             f"Invalid resource '{resource}'. Must be either 'credits' or 'lyrics'."
         )
-
-    credentials_required = {
-        "credits": False,
-        "lyrics": True,
-    }
-
-    credentials = get_spotify_credentials() if credentials_required[resource] else None
 
     input_path = args.input_path
     try:
@@ -250,9 +260,27 @@ if __name__ == "__main__":
 
     print(f"Fetching data for {len(track_ids)} track IDs")
 
-    headers = get_internal_api_request_headers(
-        track_ids=track_ids, credentials=credentials
-    )
+    headers_file_path = args.json_headers_path
+    headers = None
+    if headers_file_path is not None:
+        headers = read_json(headers_file_path)
+        print(f"Using headers from file '{headers_file_path}'")
+        print(
+            "IMPORTANT: Assuming that the headers are of a session where a user is logged in."
+        )
+
+    credentials_required = {
+        "credits": False,
+        "lyrics": True,
+    }
+
+    if headers is None:
+        headers = get_internal_api_request_headers(
+            track_ids=track_ids,
+            credentials=get_spotify_credentials()
+            if credentials_required[resource]
+            else None,
+        )
 
     run_in_parallel = False
     # run_in_parallel = (
