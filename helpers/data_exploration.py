@@ -64,3 +64,7 @@ def get_spotify_album_link(id: str):
 
 def get_spotify_artist_link(id: str):
     return f"https://open.spotify.com/artist/{id}"
+
+
+def get_id_from_spotify_uri(uri: str):
+    return uri.split(":")[-1]

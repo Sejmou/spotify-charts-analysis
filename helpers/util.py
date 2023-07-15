@@ -1,5 +1,7 @@
 from datetime import datetime
 import os
+import pandas as pd
+import re
 
 
 def split_into_chunks_of_size(list_to_split: list, chunk_size: int):
@@ -43,3 +45,8 @@ def append_line_to_file(line: str, file_path: str):
     """
     with open(file_path, "a") as f:
         f.write(line + "\n")
+
+
+def convert_columns_to_snake_case(df: pd.DataFrame):
+    df = df.rename(columns=lambda x: re.sub(r"(?<!^)(?=[A-Z])", "_", x).lower())
+    return df

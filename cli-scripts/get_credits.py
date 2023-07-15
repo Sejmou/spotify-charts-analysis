@@ -1,5 +1,10 @@
 """
 Gets credits for track IDs contained in a .parquet file via an internal Spotify API and saves the results to a .jsonl file.
+
+You might have to rerun this script a few times to get all the data, as sometimes the Spotify API returns an error response if too many requests are sent at once.
+
+Could try switching from parallel to sequential requests if the number of tracks to process is small
+(just comment out the multiprocessing part and uncomment the sequential part).
 """
 
 import json
@@ -19,22 +24,30 @@ import random
 
 
 # simpler, but slower synchronous version
-# import requests
-# import time
-# def sync_main(urls: list, headers: dict):
-#     responses = []
-#     for url in tqdm(urls):
-#         processed = False
-#         while not processed:
-#             try:
-#                 response = requests.get(url, headers=headers)
-#                 responses.append(response.json())
-#                 processed = True
-#             except Exception:
-#                 print(f"Failed to process {url}. Retrying...")
-#                 time.sleep(1)
+import requests
+import time
 
-#     return responses
+
+def sync_main(urls: list, headers: dict, error_log_path: str):
+    valid_responses = []
+    for url in tqdm(urls):
+        try:
+            response = requests.get(url, headers=headers)
+            response_json = response.json()
+            if "error" in response_json:
+                # received response in a form like {"error": {"status": 502, "message": "Backend respond with 500"}}
+                append_line_to_file(
+                    f"{url}: {json.dumps(response_json)}", error_log_path
+                )
+            else:
+                valid_responses.append(response_json)
+
+        except Exception:
+            # backend threw some other error that is not in the form of a JSON object
+            # usually this is java.lang.RuntimeException: Invalid response from entity service: [SERVICE_UNAVAILABLE]
+            append_line_to_file(f"{url}: {response.text}", error_log_path)
+
+    return valid_responses
 
 
 async def send_request(session, url, headers):
@@ -148,7 +161,7 @@ if __name__ == "__main__":
 
     try:
         track_ids = (input_df)["track_id"].unique().tolist()
-        print(f"Data for {len(track_ids)} track IDs already exists '{input_path}'")
+        print(f"Found {len(track_ids)} track IDs in input file '{input_path}'")
     except Exception:
         raise ValueError(
             f"Input file '{input_path}' must contain a column named 'track_id'"
@@ -160,35 +173,22 @@ if __name__ == "__main__":
         with open(output_path, "r") as f:
             existing_track_ids = get_existing_track_ids(output_path)
             print(
-                f"Found {len(existing_track_ids)} existing track IDs in '{output_path}'"
+                f"Found {len(existing_track_ids)} existing track IDs in output file '{output_path}'"
             )
             track_ids = [
                 track_id for track_id in track_ids if track_id not in existing_track_ids
             ]
-            print(f"Data is still missing for {len(track_ids)} track IDs")
+            if len(track_ids) == 0:
+                print("No track IDs left to fetch credits data for!")
+                exit(0)
+            else:
+                print(f"Data is still missing for {len(track_ids)} track IDs")
     else:
         # create output file and required subdirectories if they don't exist
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
         open(output_path, "w").close()
 
-    error_log_path = output_path.replace(".jsonl", "_error_log.txt")
-    error_details = parse_error_log_file(error_log_path)
-    # retry for every track ID that failed with a JSON error (the string errors are probably Java Runtime errors that cannot be fixed by retrying)
-    track_ids_to_retry = set(
-        [
-            error_detail["track_id"]
-            for error_detail in error_details
-            if error_detail["error_message_type"] == "json"
-        ]
-    )
-    print(f"Found {len(track_ids_to_retry)} track IDs that failed with error earlier")
-    track_ids_to_retry = [
-        track_id
-        for track_id in track_ids_to_retry
-        if track_id not in existing_track_ids
-    ]
-    print(f"Data is still missing for {len(track_ids_to_retry)} of those track IDs")
-    track_ids = track_ids + track_ids_to_retry
+    error_log_path = output_path.replace(".jsonl", "_errors.log")
 
     print(f"Fetching credits data for {len(track_ids)} track IDs")
 
@@ -219,12 +219,19 @@ if __name__ == "__main__":
                         )
                     except Exception:
                         print("Failed to get request headers. Trying again...")
+
+                # run requests in parallel
                 valid_responses = asyncio.run(
                     async_main(
                         urls=urls, headers=headers, error_log_path=error_log_path
                     )
                 )
-                # valid_responses = sync_main(urls=urls, headers=headers)
+
+                # run requests sequentially
+                # valid_responses = sync_main(
+                #     urls=urls, headers=headers, error_log_path=error_log_path
+                # )
+
                 processed_ids = [
                     response["trackUri"].split(":")[2] for response in valid_responses
                 ]
