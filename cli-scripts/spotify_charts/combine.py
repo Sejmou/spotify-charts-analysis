@@ -92,6 +92,8 @@ def combine_csv_files(
     combined_df = combined_df.sort_values(
         by=["date", "region_code", "pos"]
     )  # sort by date, region_code, and pos
+    # convert region codes to uppercase to match ISO 3166-1 alpha-2 country codes more closely and make joins with Spotify API data easier
+    combined_df.region_code = combined_df.region_code.str.upper()
 
     if start_date_filter is not None:
         combined_df = combined_df[combined_df.date >= start_date_filter]
