@@ -61,14 +61,12 @@ def main(input_path: str, output_dir: str):
     metadata_df.to_parquet(metadata_path)
     print(f"Saved track metadata to '{metadata_path}'")
 
-    track_artists_df = pd.DataFrame(
-        track_artists, columns=["track_id", "artist_id", "pos"]
-    )
+    track_artists_df = pd.DataFrame(track_artists, columns=["id", "artist_id", "pos"])
     artists_path = os.path.join(output_dir, "artists.parquet")
     track_artists_df.to_parquet(artists_path)
     print(f"Saved track artists to '{artists_path}'")
 
-    track_markets_df = pd.DataFrame(track_markets, columns=["track_id", "market"])
+    track_markets_df = pd.DataFrame(track_markets, columns=["id", "market"])
     markets_path = os.path.join(output_dir, "markets.parquet")
     track_markets_df.to_parquet(markets_path)
     print(f"Saved track markets to '{markets_path}'")

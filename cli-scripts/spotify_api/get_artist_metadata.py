@@ -72,15 +72,15 @@ def main(input_paths: list, output_dir: str):
     metadata_df.to_parquet(metadata_path)
     print(f"Saved artist metadata to '{metadata_path}'")
 
-    artist_genres_df = pd.DataFrame(artist_genres, columns=["artist_id", "genre"])
-    artist_genres_path = os.path.join(output_dir, "artist_genres.parquet")
+    artist_genres_df = pd.DataFrame(artist_genres, columns=["id", "genre"])
+    artist_genres_path = os.path.join(output_dir, "genres.parquet")
     artist_genres_df.to_parquet(artist_genres_path)
     print(f"Saved artist genres to '{artist_genres_path}'")
 
     artist_images_df = pd.DataFrame(
-        artist_images, columns=["artist_id", "url", "width", "height"]
+        artist_images, columns=["id", "url", "width", "height"]
     )
-    artist_images_path = os.path.join(output_dir, "artist_images.parquet")
+    artist_images_path = os.path.join(output_dir, "images.parquet")
     artist_images_df.to_parquet(artist_images_path)
     print(f"Saved artist images to '{artist_images_path}'")
 
