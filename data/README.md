@@ -20,7 +20,9 @@ As of mid-June 2023, data for 73 regions was available (the region select dropdo
 
 ## `country_codes.csv`
 
-This file was downloaded from [here](https://raw.githubusercontent.com/lukes/ISO-3166-Countries-with-Regional-Codes/master/all/all.csv). The interesting parts are the three-letter ISO codes. They are matched with the two-letter ISO codes in `region_codes.txt`. Then, the two-letter ISO codes are used to get population data contained in `country_population.csv`.
+This file was downloaded from [here](https://raw.githubusercontent.com/lukes/ISO-3166-Countries-with-Regional-Codes/master/all/all.csv). The two-letter ISO codes in this dataset can be used for joins with the regions in the scraped charts data (output of `combine_charts.py`) or any other region data contained in Spotify API responses (e.g. available markets for tracks).
+
+This file can also be joined with population data contained in `country_population.csv` (which is actually not being used atm, but might become useful later).
 
 ## `country_population.csv`
 
