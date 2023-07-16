@@ -70,25 +70,33 @@ def main(input_path: str, output_dir: str):
     metadata_df.to_parquet(metadata_path)
     print(f"Saved album metadata to '{metadata_path}'")
 
-    album_imgs_df = pd.DataFrame(album_imgs, columns=["id", "url", "width", "height"])
+    album_imgs_df = pd.DataFrame(
+        album_imgs, columns=["album_id", "url", "width", "height"]
+    )
+    album_imgs_df.set_index("album_id", inplace=True)
     album_imgs_path = os.path.join(output_dir, "imgs.parquet")
     album_imgs_df.to_parquet(album_imgs_path)
     print(f"Saved album images to '{album_imgs_path}'")
 
-    album_artists_df = pd.DataFrame(album_artists, columns=["id", "artist_id", "pos"])
+    album_artists_df = pd.DataFrame(
+        album_artists, columns=["album_id", "artist_id", "pos"]
+    )
+    album_artists_df.set_index("album_id", inplace=True)
     album_artists_path = os.path.join(output_dir, "artists.parquet")
     album_artists_df.to_parquet(album_artists_path)
     print(f"Saved album artists to '{album_artists_path}'")
 
-    album_markets_df = pd.DataFrame(album_markets, columns=["id", "market"])
+    album_markets_df = pd.DataFrame(album_markets, columns=["album_id", "market"])
+    album_markets_df.set_index("album_id", inplace=True)
     album_markets_path = os.path.join(output_dir, "markets.parquet")
     album_markets_df.to_parquet(album_markets_path)
     print(f"Saved album markets to '{album_markets_path}'")
 
     album_copyrights_df = pd.DataFrame(
         album_copyrights,
-        columns=["id", "text", "type"],
+        columns=["album_id", "text", "type"],
     )
+    album_copyrights_df.set_index("album_id", inplace=True)
     album_copyrights_path = os.path.join(output_dir, "copyrights.parquet")
     album_copyrights_df.to_parquet(album_copyrights_path)
     print(f"Saved album copyrights to '{album_copyrights_path}'")
@@ -157,9 +165,9 @@ def process_album_data_from_api(
 
     series = pd.Series(data)
 
-    # make sure the 'id' comes first in the series
+    # make sure the 'id' comes first in the series and rename it to 'album_id'
     id_value = series.pop("id")
-    id_series = pd.Series(id_value, index=["id"])
+    id_series = pd.Series(id_value, index=["album_id"])
     series = pd.concat([id_series, series])
 
     series.release_date = pd.to_datetime(series.release_date)

@@ -68,18 +68,21 @@ def main(input_paths: list, output_dir: str):
             pbar.update(1)
 
     metadata_df = pd.concat(metadata_dfs, ignore_index=True)
+    metadata_df.set_index("artist_id", inplace=True)
     metadata_path = os.path.join(output_dir, "metadata.parquet")
     metadata_df.to_parquet(metadata_path)
     print(f"Saved artist metadata to '{metadata_path}'")
 
-    artist_genres_df = pd.DataFrame(artist_genres, columns=["id", "genre"])
+    artist_genres_df = pd.DataFrame(artist_genres, columns=["artist_id", "genre"])
+    artist_genres_df.set_index("artist_id", inplace=True)
     artist_genres_path = os.path.join(output_dir, "genres.parquet")
     artist_genres_df.to_parquet(artist_genres_path)
     print(f"Saved artist genres to '{artist_genres_path}'")
 
     artist_images_df = pd.DataFrame(
-        artist_images, columns=["id", "url", "width", "height"]
+        artist_images, columns=["artist_id", "url", "width", "height"]
     )
+    artist_images_df.set_index("artist_id", inplace=True)
     artist_images_path = os.path.join(output_dir, "images.parquet")
     artist_images_df.to_parquet(artist_images_path)
     print(f"Saved artist images to '{artist_images_path}'")
@@ -134,9 +137,9 @@ def process_artist_data_from_api(
 
     series = pd.Series(data)
 
-    # make sure the 'id' comes first in the series
+    # make sure the 'id' comes first in the series and rename it to 'artist_id'
     id_value = series.pop("id")
-    id_series = pd.Series(id_value, index=["id"])
+    id_series = pd.Series(id_value, index=["artist_id"])
     series = pd.concat([id_series, series])
 
     attrs_to_drop = [

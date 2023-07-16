@@ -57,16 +57,21 @@ def main(input_path: str, output_dir: str):
             pbar.update(1)
 
     metadata_df = pd.concat(metadata_dfs, ignore_index=True)
+    metadata_df.set_index("track_id", inplace=True)
     metadata_path = os.path.join(output_dir, "metadata.parquet")
     metadata_df.to_parquet(metadata_path)
     print(f"Saved track metadata to '{metadata_path}'")
 
-    track_artists_df = pd.DataFrame(track_artists, columns=["id", "artist_id", "pos"])
+    track_artists_df = pd.DataFrame(
+        track_artists, columns=["track_id", "artist_id", "pos"]
+    )
+    track_artists_df.set_index("track_id", inplace=True)
     artists_path = os.path.join(output_dir, "artists.parquet")
     track_artists_df.to_parquet(artists_path)
     print(f"Saved track artists to '{artists_path}'")
 
-    track_markets_df = pd.DataFrame(track_markets, columns=["id", "market"])
+    track_markets_df = pd.DataFrame(track_markets, columns=["track_id", "market"])
+    track_markets_df.set_index("track_id", inplace=True)
     markets_path = os.path.join(output_dir, "markets.parquet")
     track_markets_df.to_parquet(markets_path)
     print(f"Saved track markets to '{markets_path}'")
@@ -106,9 +111,9 @@ def process_track_data_from_api(
 
     series = pd.Series(data)
 
-    # make sure the 'id' comes first in the series
+    # make sure the 'id' comes first in the series and is named 'track_id'
     id_value = series.pop("id")
-    id_series = pd.Series(id_value, index=["id"])
+    id_series = pd.Series(id_value, index=["track_id"])
     series = pd.concat([id_series, series])
 
     attrs_to_drop = [
