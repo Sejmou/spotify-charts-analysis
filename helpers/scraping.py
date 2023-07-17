@@ -134,7 +134,9 @@ def get_internal_api_request_headers(track_ids: List[str], credentials: tuple):
     Uses a random track ID from the provided IDs to do the stuff that is required to get the headers. Check the function implemntation for more details.
     """
 
-    def setup_webdriver(headless: bool = True, credentials: tuple = None):
+    def setup_webdriver(
+        track_id: str, headless: bool = True, credentials: tuple = None
+    ):
         while True:
             try:
                 options = webdriver.ChromeOptions()
@@ -145,17 +147,20 @@ def get_internal_api_request_headers(track_ids: List[str], credentials: tuple):
                     options.add_argument("--headless=new")
                 driver = webdriver.Chrome(options=options)
 
+                url = get_spotify_track_link(id=track_id)
+
                 if credentials is not None:
                     username, password = credentials
                     login_and_accept_cookies(
-                        driver,
-                        username,
-                        password,
-                        after_login_url=get_spotify_track_link(
-                            random.choice(track_ids)
-                        ),
+                        driver=driver,
+                        username=username,
+                        password=password,
                     )
                     print("Logged in successfully")
+                else:
+                    # could just navigate to some random Spotify page, actually, important thing is that we accept cookies
+                    driver.get(url)
+                    accept_cookies(driver)
 
                 return driver
             except Exception as e:
@@ -176,6 +181,12 @@ def get_internal_api_request_headers(track_ids: List[str], credentials: tuple):
         )
         credits_button.click()
 
+    def open_lyrics_view(driver: webdriver.Chrome):
+        lyrics_button = get_element_with_att_and_val(
+            driver, "data-testid", "lyrics-button"
+        )
+        lyrics_button.click()
+
     def is_internal_api_request(log_entry, track_id):
         """
         Detects whether a log entry is a request to the internal Spotify API. We can use this request's headers to make our own requests to the API.
@@ -184,13 +195,15 @@ def get_internal_api_request_headers(track_ids: List[str], credentials: tuple):
             log_entry["message"]["method"] == "Network.requestWillBeSent"
             and log_entry["message"]["params"]["request"]["url"].startswith(
                 get_credits_api_url(track_id)
+                if credentials is None
+                else get_lyrics_api_url(track_id)
             )
             and log_entry["message"]["params"]["documentURL"].startswith(
                 "https://open.spotify.com/track/"
             )
         )
 
-    driver = setup_webdriver(credentials=credentials)
+    driver = setup_webdriver(track_id=random.choice(track_ids), credentials=credentials)
 
     headers = None
     while headers is None:
@@ -199,7 +212,10 @@ def get_internal_api_request_headers(track_ids: List[str], credentials: tuple):
             track_id = random.choice(track_ids)
             track_page_url = get_spotify_track_link(track_id)
             driver.get(track_page_url)
-            open_credits_popup(driver)
+            if credentials is not None:
+                open_lyrics_view(driver)
+            else:
+                open_credits_popup(driver)
 
             log_entries = driver.get_log("performance")
             for entry in log_entries:

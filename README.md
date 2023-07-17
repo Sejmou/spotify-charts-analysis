@@ -63,3 +63,5 @@ Alternatively, you can of course also just install packages one-by-one as you ar
 
 ## Findings and Discoveries
 Track lyrics on Spotify can be incorrect, even for fairly popular songs (for example [this](https://open.spotify.com/track/59mdyQniSaNFeXaKMGu9RB) instrumental track that for some reason has lyrics).
+
+Apparently, track lyrics can only be fetched from the internal API if the requested track is available in the country associated with the Spotify account whose request headers are used for making the request.
