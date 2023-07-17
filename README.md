@@ -2,40 +2,48 @@
 In this repo, I collect and explore data related to tracks featured in the [Spotify Charts](https://charts.spotify.com/charts). I build on the work I did in [this repo](https://github.com/Sejmou/spotify-charts-viz.git) where I already did quite a lot of stuff. Unfortunately, the data processing in this project was really messy, so I decided to start from scratch to create a cleaner dataset.
 
 ## Data collection scripts
-I have come up with CLI scripts for fetching data related to the Spotify Charts. They can be found in the `cli-scripts` subfolder of this project.
+I have come up with CLI scripts for fetching data related to the Spotify Charts. They can be found in the `cli-scripts` subfolder of this project. As the folder name suggests, the scripts can all be invoked directly from the command line. You can call each script with the `-h` option to get information about the accepted arguments (example: `python cli-scripts/get_all.py -h`). 
 
-### Part 1: Scraping chart data
+### Chart Data Scraping
 First, I came up with scripts for assembling data for tracks of the Spotify Daily Top 200. Unfortunately, this data is not available via the API. Furthermore, one has to download chart CSV files for each region and track separately (by navigating to the Spotify Charts page and clicking the download button) which is very inconvenient. 
 
-However, I worked around this by creating a `download_charts.py` that automates that process using `selenium`. Chart data for a given date range and selection of regions can be downloaded automatically to a specified folder.
+However, I worked around this by creating two scripts (see the `spotify_charts` subfolder):
+ - `download.py`: automates the process of downloading charts CSV files for several regions (either all or a subset specified via arguments) and a given date range (start + end date) using `selenium` (requires Spotify account/credentials!)
+ - `combine_charts.py`: combines downloaded Spotify chart CSV files located in the specified directory into a single `.parquet` file
 
-Afterwards, `combine_charts.py` can be used to combine the data into a single file (the `.parquet` format is preferable compared to `.csv`, however both are supported).
+### Metadata from Spotify API
+A lot of interesting information and metadata about music on Spotify can also be retrieved from Spotify's [official API](https://developer.spotify.com/documentation/web-api). All scripts using the Spotify API (via the [`spotipy`](https://github.com/spotipy-dev/spotipy) Python API wrapper) can be found in `spotify_api`:
 
-### Part 2: Obtaining metadata for tracks, albums, and artists
-I wrote `get_track_metadata.py`, a script for fetching metadata for each track in the charts dataset (or, actually any `parquet` file containing a `track_id` column with Spotify track IDs). This creates several `parquet` files in a specified output directory with metadata concerning the provided tracks. The `metadata.parquet` file created by this script also contains the IDs of the albums/singles that each track was released on.
+- `get_track_metadata.py`: fetches track metadata from the `/tracks` API endpoint for unique track IDs mentioned in a provided `.parquet` file. Outputs a folder of several metadata `.parquet` files
+- `get_album_metadata.py`: does the same thing as above, only for albums instead of tracks (using the `/albums` API endpoint)
+- `get_artist_metadata.py`: fetches artist metadata for all unique artist IDs among several input files (each having an `artists_id` column), also storing metadata in a folder like the other scripts above
+- `get_all.py`: combines all scripts, getting track metadata first, then album metadata for all albums associated with tracks and finally artist metadata for all track and album artists.
 
-Metadata for albums can be fetched with get_album_metadata.py`. Just provide a path to a `parquet` file containing Spotify album IDs (note: Spotify refers to both albums and singles as albums, i.e. both are accessible via the `/albums` endpoint in the API). Again, multiple files are created in a specified output directory. The `artists.parquet` file contains the IDs of all artists featured in each track (together with information about who is the primary artist, secondary artists etc.).
+### Metadata from inofficial Spotify APIs
+Unfortunately, the information for track credits (specifically, songwriters and producers) is also [not available via the public Spotify API](https://community.spotify.com/t5/Spotify-for-Developers/Getting-credits-on-a-track/td-p/4950934). However, I came up with a way to work around that. One can extract the request headers that are used for specific requests made by the Spotify Web App, e.g. when opening the `Show Credits` popup on a track page and reuse them to make other requests to the same (inofficial/internal) API endpoint.
 
-Finally, the `get_artist_metadata.py` script gets metadata for all unique artist IDs contained in the `artist_id` columns of specified `.parquet` files. Just as with the other two scripts, data is again written to a specified output directory.
+This approach can be used to 
 
-### Part 3: Scraping credits information
-Unfortunately, the information for track credits (performers, songwriters, producers) is also [not available via the Spotify API](https://community.spotify.com/t5/Spotify-for-Developers/Getting-credits-on-a-track/td-p/4950934). I again wrote a scraping script to work around that and obtain credits for given track IDs (`get_credits.py`).
+### Example: Create dataset around Spotify Daily Top 200 Charts for 2022
 
-While I was at it, I realized that the song page I scraped the credits from also includes track lyrics. So, I wrote a script for that as well (`get_lyrics.py`). BEWARE: song lyrics are subject to copyright, so be careful not to get into legal issues.
+#### Pt. 1: Download Charts
+```bash
+# download CSVs; might take a loooong time, can be interrupted and restarted/resumed later
+python cli-scripts/spotify_charts/download.py -s 2022-01-01 -e 2022-12-31 -o data/scraper_downloads
 
-### Example: Get Daily Top 200 chart data for 2022
-TODO: add missing commands
-
+# combine downloaded CSVs into single parquet file
+python cli-scripts/spotify_charts/combine.py -o data/top200_2022
 ```
-python cli-scripts/get_track_metadata.py -i data/top200_2022/charts.parquet -o data/top200_2022/tracks
+
+#### Pt. 2: Metadata from the API
+```bash
+python cli-scripts/spotify_api/get_all.py -i data/top200_2022/charts.parquet
 ```
 
-```
-python cli-scripts/get_album_metadata.py -i data/top200_2022/tracks/metadata.parquet -o data/top200_2022/albums
-```
+#### Pt. 3: Additional (internal) API data
+TODO: add proper command once scripts are 'finished' (good enough)
+```bash
 
-```
-python cli-scripts/get_artist_metadata.py -i data/top200_2022/tracks/artists.parquet data/top200_2022/albums/artists.parquet -o data/top200_2022/artists
 ```
 
 ### Addtional setup instructions
@@ -52,3 +60,6 @@ To make all the scripts work out-of-the-box you can simply install the `helpers`
 pip install -e .
 ```
 Alternatively, you can of course also just install packages one-by-one as you are running into issues trying to execute things lol
+
+## Findings and Discoveries
+Track lyrics on Spotify can be incorrect, even for fairly popular songs (for example [this](https://open.spotify.com/track/59mdyQniSaNFeXaKMGu9RB) instrumental track that for some reason has lyrics).
