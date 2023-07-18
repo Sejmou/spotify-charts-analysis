@@ -17,7 +17,7 @@ import pandas as pd
 from tqdm import tqdm
 import os
 import requests
-from typing import Callable, List
+from typing import Callable, Set
 import random
 import time
 from collections import defaultdict
@@ -34,7 +34,7 @@ def sync_main(
     headers: dict,
     output_path: str,
     error_log_path: str,
-    track_ids: List[str],
+    track_ids: Set[str],
     new_headers_getter: Callable[[], dict],
 ):
     """
@@ -129,7 +129,8 @@ async def async_main(
     headers: dict,
     output_path: str,
     error_log_path: str,
-    track_ids: List[str],
+    track_ids: Set[str],
+    new_headers_getter: Callable[[], dict],
     parallel_requests: int = 1,
 ):
     # limit number of simultaneous requests to same endpoint: https://stackoverflow.com/a/43857526/13727176
@@ -137,50 +138,118 @@ async def async_main(
     async with aiohttp.ClientSession(connector=connector) as session:
         tasks = []
         chunk_size = parallel_requests
-        id_chunks = split_into_chunks_of_size(track_ids, chunk_size)
+        id_chunks = split_into_chunks_of_size(list(track_ids), chunk_size)
         print(
             f"Splitting track IDs into {len(id_chunks)} chunks of size {chunk_size} (IDs within each chunk will be processed in parallel)"
         )
         print("Data will be written to disk after every chunk is processed")
-        request_without_429 = 0
+        chunks_without_429 = 0
+        status_code_counts = defaultdict(int)
+        processed_count = 0
+
         for id_chunk in tqdm(id_chunks):
             urls = [url_getter(t_id) for t_id in id_chunk]
             tasks = [
                 asyncio.create_task(
-                    process_url_with_aiohttp(
-                        session=session, url=url, headers=headers, track_id=t_id
+                    get_data_async(
+                        track_id=t_id,
+                        request_url=url,
+                        request_headers=headers,
+                        session=session,
+                        time_before_sending_request=i
+                        * random.uniform(
+                            0.05, 0.1
+                        ),  # don't send each request at the exact same time
                     )
                 )
-                for (url, t_id) in zip(urls, id_chunk)
+                for i, (url, t_id) in enumerate(zip(urls, id_chunk))
             ]
             results = await asyncio.gather(*tasks)
+            chunk_status_code_counts = defaultdict(int)
+
             for result in results:
                 process_result_dict(
                     result=result,
                     output_path=output_path,
                     error_log_path=error_log_path,
                 )
-                if result["status_code"] != 429:
-                    request_without_429 += 1
-                else:
-                    print(f"Got 429 status code after {request_without_429} requests")
-                    request_without_429 = 0
-                    print("Waiting 60 seconds")
-                    await asyncio.sleep(60)
+                chunk_status_code_counts[result["status_code"]] += 1
+
+            if chunk_status_code_counts[429] > 0:
+                print(
+                    f"Received 429 status code {chunk_status_code_counts[429]} times in current chunk (after {chunks_without_429} chunks without any)"
+                )
+                chunks_without_429 = 0
+                wait_time = random.uniform(1, 5)
+                print(f"Waiting {wait_time} seconds before proceeding")
+                await asyncio.sleep(wait_time)
+            if chunk_status_code_counts[401] > 0:
+                print(
+                    f"Got 401 status code for {chunk_status_code_counts[401]} requests, getting new headers"
+                )
+                headers = new_headers_getter()
+
+            results_with_401_or_429 = [
+                r for r in results if r["status_code"] == 401 or r["status_code"] == 429
+            ]
+            ids_to_refetch = [r["url"] for r in results_with_401_or_429]
+
+            if len(ids_to_refetch) > 0:
+                print(
+                    f"Fetching missing data for {len(ids_to_refetch)} track IDs synchronously"
+                )
+                start_time = time.time()
+                for url in ids_to_refetch:
+                    while True:
+                        status_code = process_track_id_sync(
+                            track_id=result["track_id"],
+                            request_url=url,
+                            request_headers=headers,
+                            output_path=output_path,
+                            error_log_path=error_log_path,
+                        )
+                        chunk_status_code_counts[status_code] += 1
+                        if status_code != 401 and status_code != 429:
+                            break
+                        else:
+                            if status_code == 401:
+                                print("Got 401 status code, getting new headers")
+                                headers = new_headers_getter()
+                            elif status_code == 429:
+                                print("Got 429 status code, waiting a second")
+                                time.sleep(1)
+                duration = time.time() - start_time
+                print(f"Took {duration} seconds to fetch missing data")
+
+            # add chunk status code counts to overall status code counts
+            for status_code, count in chunk_status_code_counts.items():
+                status_code_counts[status_code] += count
+
+            processed_count += len(results)
+
+            print(f"Status code counts after processing {processed_count} track IDs:")
+            print(status_code_counts)
 
 
-async def process_url_with_aiohttp(
-    session: aiohttp.ClientSession, url: str, headers: dict, track_id: str
+async def get_data_async(
+    track_id: str,
+    request_url: str,
+    request_headers: dict,
+    session: aiohttp.ClientSession,
+    time_before_sending_request=0.0,
 ):
-    async with session.get(url, headers=headers) as response:
+    await asyncio.sleep(time_before_sending_request)
+    async with session.get(request_url, headers=request_headers) as response:
         status_code = response.status
         content = await response.text()
-        return create_result_dict(
-            status_code=status_code,
-            content=content,
-            url=url,
-            track_id=track_id,
-        )
+
+    result = create_result_dict(
+        status_code=status_code,
+        content=content,
+        url=request_url,
+        track_id=track_id,
+    )
+    return result
 
 
 def create_result_dict(status_code: int, content: str, url: str, track_id: str):
@@ -272,9 +341,6 @@ def read_json(file_path: str):
         return json.load(f)
 
 
-import requests
-
-
 def ip_info(addr=""):
     """
     Fetches IP information from ipinfo.io.
@@ -322,12 +388,6 @@ if __name__ == "__main__":
         required=True,
     )
     parser.add_argument(
-        "-j",
-        "--json_headers_path",
-        type=str,
-        help="Path to a JSON file containing the headers to be used for the requests. Not recommended, as headers can expire, causing the script to fail.",
-    )
-    parser.add_argument(
         "-m",
         "--markets_path",
         type=str,
@@ -338,7 +398,13 @@ if __name__ == "__main__":
         "--parallel_requests",
         type=int,
         help="The number of parallel requests to send. A value of 1 is synonymous with synchronous processing.",
-        default=10,
+        default=50,
+    )
+    parser.add_argument(
+        "-c",
+        "--cookies-path",
+        type=str,
+        help="Path to a Pickle file containing the cookies of a Spotify 'session' (where cookies were accepted and user is logged in (if login required by endpoint)). Used for getting the request headers. If you don't have a file yet, created one with `save_cookies.py`).",
     )
 
     args = parser.parse_args()
@@ -353,6 +419,8 @@ if __name__ == "__main__":
     try:
         tracks_df = pd.read_parquet(input_path)
         track_ids = set(tracks_df["track_id"].unique())
+        print(f'Found {len(track_ids)} track IDs in input file "{input_path}".')
+        print()
     except Exception:
         raise ValueError(
             f"Input file '{input_path}' must be a .parquet file with a column named 'track_id'."
@@ -384,6 +452,7 @@ if __name__ == "__main__":
             print(
                 f"Proceeding with {len(track_ids)} tracks available in market '{market}'"
             )
+            print()
         except Exception:
             raise ValueError(
                 f"Input file '{input_path}' must contain a column named 'track_id'"
@@ -408,6 +477,7 @@ if __name__ == "__main__":
                 exit(0)
             else:
                 print(f"{len(track_ids)} track IDs remain")
+                print()
     else:
         # create output file and required subdirectories if they don't exist
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
@@ -424,25 +494,22 @@ if __name__ == "__main__":
     # identify 403 or 404 errors in logs and skip associated track IDs
     errors = errors[errors["status_code"].isin([403, 404])]
     error_ids = set(errors["track_id"].unique())
-    print(f"Found {len(error_ids)} track IDs with 403 or 404 errors (will be skipped)")
-    track_ids = track_ids.difference(error_ids)
+    if len(error_ids) > 0:
+        print(
+            f"Found {len(error_ids)} track IDs with 403 or 404 errors (will be skipped)"
+        )
+        track_ids = track_ids.difference(error_ids)
+    print()
 
     print(f"Fetching data for {len(track_ids)} track IDs")
 
-    headers_file_path = args.json_headers_path
-    if headers_file_path is not None:
-        get_headers = lambda: read_json(headers_file_path)  # just read from path again
-        print(
-            f"Using headers from file '{headers_file_path}' (will also 'refetch' from there in case of 401 error)"
-        )
-        if endpoint["requires_login"]:
-            print(
-                "WARNING: provided headers must belong to a session where the user is logged in, otherwise the requests will fail."
-            )
-    else:
-        get_headers = InternalRequestHeadersGetter(
-            resource_name=args.resource, track_ids=track_ids
-        ).get_headers
+    cookies_path = args.cookies_path
+
+    get_headers = InternalRequestHeadersGetter(
+        resource_name=args.resource,
+        track_ids=track_ids,
+        cookies_path=cookies_path,
+    ).get_headers
 
     headers = get_headers()
     url_getter = endpoint["url_getter"]
@@ -462,6 +529,7 @@ if __name__ == "__main__":
                 headers=headers,
                 output_path=output_path,
                 error_log_path=error_log_path,
+                new_headers_getter=get_headers,
                 parallel_requests=parallel_requests,
             )
         )

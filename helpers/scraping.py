@@ -13,6 +13,7 @@ import random
 from typing import List
 from helpers.spotify_util import get_spotify_track_link
 from typing import Callable, Set
+import pickle
 
 login_page_url = "https://accounts.spotify.com/en/login"
 
@@ -109,6 +110,14 @@ def get_element_with_att_and_val(driver, att, val):
     return element
 
 
+def load_cookies(driver: webdriver, cookies_path: str):
+    with open(cookies_path, "rb") as f:
+        cookies = pickle.load(f)
+
+    for cookie in cookies:
+        driver.add_cookie(cookie)
+
+
 # ========== stuff related to internal API requests ==============
 
 
@@ -149,7 +158,9 @@ class InternalRequestHeadersGetter:
     webdriver's logs.
     """
 
-    def __init__(self, resource_name: str, track_ids: Set[str]):
+    def __init__(
+        self, resource_name: str, track_ids: Set[str], cookies_path: str = None
+    ):
         """
         Args:
             resource_name: name of the internal API endpoint to get the request headers for.
@@ -160,11 +171,15 @@ class InternalRequestHeadersGetter:
         credentials_required = internal_api_endpoints[resource_name]["requires_login"]
         if credentials_required:
             print(
-                f"Spotify login required for getting request headers for '{resource_name}' endpoint"
+                f"Warning: Spotify login required for getting request headers for '{resource_name}' endpoint"
             )
-            credentials = get_spotify_credentials()
+            if cookies_path is not None:
+                print("Make sure provided cookies are for a logged-in Spotify account")
+            print()
+
         self.driver = InternalRequestHeadersGetter.setup_webdriver(
-            credentials=credentials
+            credentials_required=credentials_required,
+            cookies_path=cookies_path,
         )
         self.request_trigger = (
             InternalRequestHeadersGetter._internal_request_trigger_fns[resource_name]
@@ -172,7 +187,11 @@ class InternalRequestHeadersGetter:
         self.track_ids = track_ids
 
     @staticmethod
-    def setup_webdriver(headless: bool = True, credentials: tuple = None):
+    def setup_webdriver(
+        headless: bool = True,
+        credentials_required: tuple = None,
+        cookies_path: str = None,
+    ):
         while True:
             try:
                 options = webdriver.ChromeOptions()
@@ -182,19 +201,23 @@ class InternalRequestHeadersGetter:
                 if headless:
                     options.add_argument("--headless=new")
                 driver = webdriver.Chrome(options=options)
-
-                if credentials is not None:
-                    username, password = credentials
-                    login_and_accept_cookies(
-                        driver=driver,
-                        username=username,
-                        password=password,
-                    )
-                    print("Logged in successfully")
-                else:
+                if cookies_path is not None:
                     driver.get("https://open.spotify.com")
-                    accept_cookies(driver)
-
+                    load_cookies(driver, cookies_path)
+                    driver.refresh()
+                    print(f"Loaded cookies from {cookies_path} successfully")
+                else:
+                    if credentials_required is not None:
+                        username, password = get_spotify_credentials()
+                        login_and_accept_cookies(
+                            driver=driver,
+                            username=username,
+                            password=password,
+                        )
+                        print("Logged in successfully")
+                    else:
+                        driver.get("https://open.spotify.com")
+                        accept_cookies(driver)
                 return driver
             except Exception as e:
                 print(
