@@ -5,26 +5,28 @@ Currently supports:
 - Lyrics
 
 Usage is a bit complicated, check the script help (`python use_internal_spotify_apis.py --help`) and the implementation for more information.
+
+Features both a synchronous and an asynchronous implementation. The async implementation doesn't work properly atm (probably mainly because of rate limiting), especially for the lyrics.
 """
 
 import json
 import argparse
-from helpers.scraping import (
-    get_credits_api_url,
-    get_lyrics_api_url,
-    get_internal_api_request_headers,
-)
-from helpers.util import (
-    split_into_chunks_of_size,
-    append_line_to_file,
-    append_list_to_file,
-)
+import aiohttp
+import asyncio
 import pandas as pd
 from tqdm import tqdm
 import os
 import requests
 from typing import Callable, List
-from helpers.scraping import get_spotify_credentials
+import random
+import time
+from collections import defaultdict
+
+from helpers.util import (
+    split_into_chunks_of_size,
+    append_line_to_file,
+)
+from helpers.scraping import internal_api_endpoints, InternalRequestHeadersGetter
 
 
 def sync_main(
@@ -33,6 +35,7 @@ def sync_main(
     output_path: str,
     error_log_path: str,
     track_ids: List[str],
+    new_headers_getter: Callable[[], dict],
 ):
     """
     Makes requests to an internal Spotify API for a list of track IDs and saves the results to the .jsonl output file path if no error was detected.
@@ -50,15 +53,133 @@ def sync_main(
         The path to the .jsonl file to save errors to
     track_ids: List[str]
         The track IDs to request data for
+    new_headers_getter: Callable[[], dict]
+        A function that returns new request headers. Used if a 401 status code is received
     """
+
+    requests_without_429 = 0
+    status_code_counts = defaultdict(int)
+    processed_count = 0
+
     for t_id in tqdm(track_ids):
-        response = process_url_with_requests(
-            url=url_getter(t_id), headers=headers, track_id=t_id
+        if processed_count > 0 and processed_count % 100 == 0:
+            print(f"Status code stats after {processed_count} processed tracks:")
+            print(status_code_counts)
+        while True:
+            status_code = process_track_id_sync(
+                track_id=t_id,
+                request_url=url_getter(t_id),
+                request_headers=headers,
+                output_path=output_path,
+                error_log_path=error_log_path,
+            )
+            if status_code != 429:
+                requests_without_429 += 1
+                if status_code != 401:
+                    processed_count += 1
+                    status_code_counts[status_code] += 1
+                else:
+                    print("Got 401 status code, getting new headers")
+                    headers = new_headers_getter()
+                break
+            else:
+                print(f"Got 429 status code after {requests_without_429} requests")
+                requests_without_429 = 0
+                wait_time = random.uniform(1, 5)
+                print(f"Waiting {wait_time} seconds before trying again")
+                time.sleep(wait_time)
+
+
+def process_url_with_requests(url: str, headers: dict):
+    response = requests.get(url, headers=headers)
+    status_code = response.status_code
+    content = response.text
+    return status_code, content
+
+
+def process_track_id_sync(
+    track_id: str,
+    request_url: str,
+    request_headers: dict,
+    output_path: str,
+    error_log_path: str,
+    max_request_wait_time=0.3,
+):
+    random_wait_time = random.uniform(0, max_request_wait_time)
+    time.sleep(random_wait_time)
+    status_code, content = process_url_with_requests(
+        url=request_url, headers=request_headers
+    )
+    result = create_result_dict(
+        status_code=status_code,
+        content=content,
+        url=request_url,
+        track_id=track_id,
+    )
+    process_result_dict(
+        result=result,
+        output_path=output_path,
+        error_log_path=error_log_path,
+    )
+    return result["status_code"]
+
+
+async def async_main(
+    url_getter: Callable[[str], str],
+    headers: dict,
+    output_path: str,
+    error_log_path: str,
+    track_ids: List[str],
+    parallel_requests: int = 1,
+):
+    # limit number of simultaneous requests to same endpoint: https://stackoverflow.com/a/43857526/13727176
+    connector = aiohttp.TCPConnector(limit_per_host=parallel_requests)
+    async with aiohttp.ClientSession(connector=connector) as session:
+        tasks = []
+        chunk_size = parallel_requests
+        id_chunks = split_into_chunks_of_size(track_ids, chunk_size)
+        print(
+            f"Splitting track IDs into {len(id_chunks)} chunks of size {chunk_size} (IDs within each chunk will be processed in parallel)"
         )
-        process_result_dict(
-            result=response,
-            output_path=output_path,
-            error_log_path=error_log_path,
+        print("Data will be written to disk after every chunk is processed")
+        request_without_429 = 0
+        for id_chunk in tqdm(id_chunks):
+            urls = [url_getter(t_id) for t_id in id_chunk]
+            tasks = [
+                asyncio.create_task(
+                    process_url_with_aiohttp(
+                        session=session, url=url, headers=headers, track_id=t_id
+                    )
+                )
+                for (url, t_id) in zip(urls, id_chunk)
+            ]
+            results = await asyncio.gather(*tasks)
+            for result in results:
+                process_result_dict(
+                    result=result,
+                    output_path=output_path,
+                    error_log_path=error_log_path,
+                )
+                if result["status_code"] != 429:
+                    request_without_429 += 1
+                else:
+                    print(f"Got 429 status code after {request_without_429} requests")
+                    request_without_429 = 0
+                    print("Waiting 60 seconds")
+                    await asyncio.sleep(60)
+
+
+async def process_url_with_aiohttp(
+    session: aiohttp.ClientSession, url: str, headers: dict, track_id: str
+):
+    async with session.get(url, headers=headers) as response:
+        status_code = response.status
+        content = await response.text()
+        return create_result_dict(
+            status_code=status_code,
+            content=content,
+            url=url,
+            track_id=track_id,
         )
 
 
@@ -71,7 +192,7 @@ def create_result_dict(status_code: int, content: str, url: str, track_id: str):
     status_code: int
         The status code of the response
     content: str
-        The content of the response (usually a JSON string, but we cannot be sure, some APIs don't return JSON)
+        The content of the response (usually a JSON string, but we cannot be sure - some APIs don't return JSON)
     url: str
         The URL that was requested
     track_id: str
@@ -114,10 +235,13 @@ def process_result_dict(result: dict, output_path: str, error_log_path: str):
     output_path: str
         The path to the file where the results should be written
     error_log_path: str
-        The path to the file where errors should be written
+        The path to the file where non-recoverable errors should be written
     """
-    if result["status_code"] != 200 or "error" in result["content"]:
+    if (
+        result["status_code"] != 200 and result["status_code"] != 429
+    ) or "error" in result["content"]:
         # something went wrong
+        # print(f'Got status code {result["status_code"]}')
         append_line_to_file(
             line=json.dumps(result),
             file_path=error_log_path,
@@ -127,18 +251,6 @@ def process_result_dict(result: dict, output_path: str, error_log_path: str):
             line=json.dumps(result["content"]),
             file_path=output_path,
         )
-
-
-def process_url_with_requests(url: str, headers: dict, track_id: str):
-    response = requests.get(url, headers=headers)
-    status_code = response.status_code
-    content = response.text
-    return create_result_dict(
-        status_code=status_code,
-        content=content,
-        url=url,
-        track_id=track_id,
-    )
 
 
 def get_existing_track_ids(jsonl_file_path: str):
@@ -213,7 +325,7 @@ if __name__ == "__main__":
         "-j",
         "--json_headers_path",
         type=str,
-        help="Path to a JSON file containing the headers to be used for the requests.",
+        help="Path to a JSON file containing the headers to be used for the requests. Not recommended, as headers can expire, causing the script to fail.",
     )
     parser.add_argument(
         "-m",
@@ -221,33 +333,30 @@ if __name__ == "__main__":
         type=str,
         help="Path to a .parquet file containing the markets the provided track IDs are available in (in a column named 'markets'). If provided, only tracks that are available in the market associated with the current IP address will be fetched. This seems to be necessary for the lyrics API (as all tracks not available in a user's market return a 400 error).",
     )
+    parser.add_argument(
+        "-p",
+        "--parallel_requests",
+        type=int,
+        help="The number of parallel requests to send. A value of 1 is synonymous with synchronous processing.",
+        default=10,
+    )
 
     args = parser.parse_args()
 
-    resources = {
-        "credits": {
-            "output_filename": "credits",
-            "url_getter": get_credits_api_url,
-            "requires_login": False,
-        },
-        "lyrics": {
-            "output_filename": "lyrics",
-            "url_getter": get_lyrics_api_url,
-            "requires_login": True,
-        },
-    }
-
-    resource = resources[args.resource]
-    if resource is None:
+    endpoint = internal_api_endpoints[args.resource]
+    if endpoint is None:
         raise ValueError(
-            f"Invalid resource '{args.resource}'. Must be one of {list(resources.keys())}."
+            f"Invalid resource '{args.resource}'. Must be one of {list(internal_api_endpoints.keys())}."
         )
 
     input_path = args.input_path
     try:
         tracks_df = pd.read_parquet(input_path)
+        track_ids = set(tracks_df["track_id"].unique())
     except Exception:
-        raise ValueError(f"Input file '{input_path}' must be a .parquet file")
+        raise ValueError(
+            f"Input file '{input_path}' must be a .parquet file with a column named 'track_id'."
+        )
 
     markets_path = args.markets_path
     if markets_path is not None:
@@ -261,26 +370,20 @@ if __name__ == "__main__":
         try:
             markets_df = pd.read_parquet(markets_path)
             markets_df = markets_df[markets_df.market == market]
-            if markets_df.shape[0] == 0:
+            ids_for_market = set(markets_df.index)
+            if len(ids_for_market) == 0:
                 raise ValueError(
-                    f"No markets found for '{market}' in markets file '{markets_path}'. Are you sure this is a valid Spotify market code?"
+                    f"No track IDs found for '{market}' in markets file '{markets_path}'. Are you sure this is a valid Spotify market code?"
                 )
         except Exception:
             raise ValueError(
                 f"Markets file '{markets_path}' must be a .parquet file with a column named 'market'"
             )
         try:
-            tracks_df = tracks_df[tracks_df["track_id"].isin(markets_df.index)]
-            track_ids = tracks_df["track_id"].unique().tolist()
-            print(f"Found {len(track_ids)} tracks available in market '{market}'")
-        except Exception:
-            raise ValueError(
-                f"Input file '{input_path}' must contain a column named 'track_id'"
+            track_ids = track_ids.intersection(ids_for_market)
+            print(
+                f"Proceeding with {len(track_ids)} tracks available in market '{market}'"
             )
-    else:
-        try:
-            track_ids = tracks_df["track_id"].unique().tolist()
-            print(f"Found {len(track_ids)} track IDs in input file '{input_path}'")
         except Exception:
             raise ValueError(
                 f"Input file '{input_path}' must contain a column named 'track_id'"
@@ -299,45 +402,75 @@ if __name__ == "__main__":
             print(
                 f"Found {len(existing_track_ids)} existing track IDs in output file '{output_path}'"
             )
-            track_ids = [
-                track_id for track_id in track_ids if track_id not in existing_track_ids
-            ]
+            track_ids = track_ids.difference(existing_track_ids)
             if len(track_ids) == 0:
                 print("No track IDs left to fetch data for!")
                 exit(0)
             else:
-                print(f"Data is still missing for {len(track_ids)} track IDs")
+                print(f"{len(track_ids)} track IDs remain")
     else:
         # create output file and required subdirectories if they don't exist
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
         open(output_path, "w").close()
 
     error_log_path = output_path.replace(".jsonl", "_errors.jsonl")
+    print(f"Error log path: {error_log_path}")
+    errors = (
+        pd.read_json(error_log_path, lines=True)
+        if os.path.exists(error_log_path)
+        else pd.DataFrame()
+    )
+
+    # identify 403 or 404 errors in logs and skip associated track IDs
+    errors = errors[errors["status_code"].isin([403, 404])]
+    error_ids = set(errors["track_id"].unique())
+    print(f"Found {len(error_ids)} track IDs with 403 or 404 errors (will be skipped)")
+    track_ids = track_ids.difference(error_ids)
 
     print(f"Fetching data for {len(track_ids)} track IDs")
 
-    credentials_required = resource["requires_login"]
     headers_file_path = args.json_headers_path
-    headers = None
     if headers_file_path is not None:
-        headers = read_json(headers_file_path)
-        print(f"Using headers from file '{headers_file_path}'")
-        if credentials_required:
+        get_headers = lambda: read_json(headers_file_path)  # just read from path again
+        print(
+            f"Using headers from file '{headers_file_path}' (will also 'refetch' from there in case of 401 error)"
+        )
+        if endpoint["requires_login"]:
             print(
                 "WARNING: provided headers must belong to a session where the user is logged in, otherwise the requests will fail."
             )
+    else:
+        get_headers = InternalRequestHeadersGetter(
+            resource_name=args.resource, track_ids=track_ids
+        ).get_headers
 
-    if headers is None:
-        headers = get_internal_api_request_headers(
-            track_ids=track_ids,
-            credentials=get_spotify_credentials() if credentials_required else None,
-        )
+    headers = get_headers()
+    url_getter = endpoint["url_getter"]
 
-    url_getter = resource["url_getter"]
-    sync_main(
-        url_getter=url_getter,
-        track_ids=track_ids,
-        headers=headers,
-        output_path=output_path,
-        error_log_path=error_log_path,
+    parallel_requests = args.parallel_requests
+    print(
+        f"Sending {parallel_requests} parallel requests"
+        if parallel_requests > 1
+        else "Sending synchronous requests"
     )
+
+    if parallel_requests > 1:
+        asyncio.run(
+            async_main(
+                url_getter=url_getter,
+                track_ids=track_ids,
+                headers=headers,
+                output_path=output_path,
+                error_log_path=error_log_path,
+                parallel_requests=parallel_requests,
+            )
+        )
+    else:
+        sync_main(
+            url_getter=url_getter,
+            track_ids=track_ids,
+            headers=headers,
+            output_path=output_path,
+            error_log_path=error_log_path,
+            new_headers_getter=get_headers,
+        )
