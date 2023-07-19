@@ -1,4 +1,4 @@
-# Data
+# The `data` folder
 All data fetched by the cli-scripts should preferably be stored here. The `create_data_path()` function of the `data.py` submodule of the `helpers` package can create paths pointing to this folder, no matter where it is run from.
 
 By default, this folder is gitignored, however I added some datasets used in other parts of this project. 

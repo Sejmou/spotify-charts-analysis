@@ -1,3 +1,14 @@
+"""
+This script will save the cookies from a selenium session to a file.
+
+The main use case for this is to save cookies from a logged in session to
+avoid having to log in again when using selenium in the future (loading the cookies from the cookies file instead).
+
+In the context of this project, this script is used to save cookies from a browsing session where some user is logged in to Spotify.
+
+The generated cookies file can be passed to the `internal_spotify_apis/get.py` script to load the cookies and use them to make requests to internal Spotify APIs.
+"""
+
 import argparse
 from selenium import webdriver
 import pickle

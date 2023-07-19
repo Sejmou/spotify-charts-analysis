@@ -4,9 +4,24 @@ Currently supports:
 - Credits
 - Lyrics
 
-Usage is a bit complicated, check the script help (`python use_internal_spotify_apis.py --help`) and the implementation for more information.
+How it works:
+The target endpoint (together with a .parquet file containing the track IDs to fetch data for in a 'track_id' column)
+has to be specified as a command line argument.
 
-Features both a synchronous and an asynchronous implementation. The async implementation doesn't work properly atm (probably mainly because of rate limiting), especially for the lyrics.
+Output is a .jsonl file with the API responses (one JSON object per track ID).
+Another .jsonl file is created for logging errors.
+
+The exact usage is a bit more complicated and more parameters/input args are supported, check the script help
+(`python use_internal_spotify_apis.py --help`) and the implementation for more information.
+
+Features both a synchronous and an asynchronous implementation.
+
+Known issues: 
+ - The login (required for the lyrics script) can get blocked if the script is rerun too often without specifying
+   cookies belonging to a logged in Spotify account (obtained via `save_cookies.py`).
+ - If the lyrics script runs for a while (approximately two to three hours), it can happen that it gets stuck
+   because the webdriver is no longer logged in. This can be fixed by running the save_cookies.py script again,
+   logging into Spotify and replacing the old cookies file with the new one.
 """
 
 import json
@@ -21,6 +36,7 @@ from typing import Callable, Set
 import random
 import time
 from collections import defaultdict
+import datetime
 
 from helpers.util import (
     split_into_chunks_of_size,
@@ -110,13 +126,13 @@ def process_track_id_sync(
     status_code, content = process_url_with_requests(
         url=request_url, headers=request_headers
     )
-    result = create_result_dict(
+    result = create_response_dict(
         status_code=status_code,
         content=content,
         url=request_url,
         track_id=track_id,
     )
-    process_result_dict(
+    process_response_dict(
         result=result,
         output_path=output_path,
         error_log_path=error_log_path,
@@ -168,7 +184,7 @@ async def async_main(
             chunk_status_code_counts = defaultdict(int)
 
             for result in results:
-                process_result_dict(
+                process_response_dict(
                     result=result,
                     output_path=output_path,
                     error_log_path=error_log_path,
@@ -243,18 +259,18 @@ async def get_data_async(
         status_code = response.status
         content = await response.text()
 
-    result = create_result_dict(
+    response_data = create_response_dict(
         status_code=status_code,
         content=content,
         url=request_url,
         track_id=track_id,
     )
-    return result
+    return response_data
 
 
-def create_result_dict(status_code: int, content: str, url: str, track_id: str):
+def create_response_dict(status_code: int, content: str, url: str, track_id: str):
     """
-    Creates a dictionary containing information about the result of request to an internal Spotify API.
+    Creates a dictionary containing information about an API response to an internal Spotify API.
 
     Parameters
     ----------
@@ -270,45 +286,53 @@ def create_result_dict(status_code: int, content: str, url: str, track_id: str):
     Returns
     -------
     dict
-        A JSON object containing information about the API response with the following fields:
+        A dictionary containing the information about the response with the following fields:
         - status_code: int
             The status code of the response
-        - content: dict
-            The content of the response, together with a "content_type" field that indicates whether the response was JSON or text (if it was text, there is a single "content" field, if it was JSON, all other fields of the response are included)
+        - content: str or dict
+            The content of the response
+        - content_type: str
+            The content type of the response (either 'json' or 'text')
         - url: str
             The URL that was requested
         - track_id: str
-            The ID of the track that was requested
+            The ID of the track for which data was requested
+        - timestamp: str
+            The timestamp when the response was received (in UTC time)
     """
     try:
         content = json.loads(content)
-        content["content_type"] = "json"
+        content_type = "json"
     except Exception:
-        content = {"content_type": "text", "content": content}
+        content = content
+        content_type = "text"
     return {
         "status_code": status_code,
-        "content": {**content, "trackId": track_id},
+        "content": content,
+        "content_type": content_type,
         "url": url,
         "track_id": track_id,
+        "timestamp": datetime.datetime.utcnow().strftime(
+            "%Y-%m-%dT%H:%M:%S.%fZ"
+        ),  # this timestamp should be easily parsable; using UTC time to avoid issues with timezones
     }
 
 
-def process_result_dict(result: dict, output_path: str, error_log_path: str):
+def process_response_dict(result: dict, output_path: str, error_log_path: str):
     """
-    Processes a result dictionary and writes it to the appropriate file.
+    Processes a dictionary with information about an API response
+    and writes it to the appropriate file.
 
     Parameters
     ----------
     result: dict
         The result dictionary as returned by create_result_dict
     output_path: str
-        The path to the file where the results should be written
+        The path to the file where responses with usable response data should be written
     error_log_path: str
-        The path to the file where non-recoverable errors should be written
+        The path to the file where responses with errors should be written
     """
-    if (
-        result["status_code"] != 200 and result["status_code"] != 429
-    ) or "error" in result["content"]:
+    if (result["status_code"] != 200) or "error" in result["content"]:
         # something went wrong
         # print(f'Got status code {result["status_code"]}')
         append_line_to_file(
@@ -317,7 +341,7 @@ def process_result_dict(result: dict, output_path: str, error_log_path: str):
         )
     else:
         append_line_to_file(
-            line=json.dumps(result["content"]),
+            line=json.dumps(result),
             file_path=output_path,
         )
 
@@ -331,7 +355,7 @@ def get_existing_track_ids(jsonl_file_path: str):
         # file is empty
         return set()
     track_ids = set(
-        df["trackId"].unique().tolist()
+        df["track_id"].unique().tolist()
     )  # probably some more efficient way to do this exists
     return track_ids
 
@@ -397,8 +421,7 @@ if __name__ == "__main__":
         "-p",
         "--parallel_requests",
         type=int,
-        help="The number of parallel requests to send. A value of 1 is synonymous with synchronous processing.",
-        default=50,
+        help="The number of parallel requests to send. A value of 1 is synonymous with synchronous processing. If not provided, a sensible default value will be used depending on the endpoint.",
     )
     parser.add_argument(
         "-c",
@@ -485,23 +508,31 @@ if __name__ == "__main__":
 
     error_log_path = output_path.replace(".jsonl", "_errors.jsonl")
     print(f"Error log path: {error_log_path}")
-    errors = (
-        pd.read_json(error_log_path, lines=True)
-        if os.path.exists(error_log_path)
-        else pd.DataFrame()
-    )
 
-    # identify 403 or 404 errors in logs and skip associated track IDs
-    errors = errors[errors["status_code"].isin([403, 404])]
-    error_ids = set(errors["track_id"].unique())
-    if len(error_ids) > 0:
-        print(
-            f"Found {len(error_ids)} track IDs with 403 or 404 errors (will be skipped)"
-        )
-        track_ids = track_ids.difference(error_ids)
-    print()
+    if os.path.exists(error_log_path):
+        errors = pd.read_json(error_log_path, lines=True)
+        if errors.shape[0] == 0:
+            # file is empty
+            print("No errors found in error log file")
+        else:
+            # identify 403 or 404 errors in logs and skip associated track IDs
+            errors = errors[errors["status_code"].isin([403, 404])]
+            error_ids = set(errors["track_id"].unique())
+            if len(error_ids) > 0:
+                print(
+                    f"Found {len(error_ids)} track IDs with 403 or 404 errors (will be skipped)"
+                )
+                track_ids = track_ids.difference(error_ids)
+            print()
+    else:
+        print(os.path.dirname(error_log_path))
+        os.makedirs(os.path.dirname(error_log_path), exist_ok=True)
 
-    print(f"Fetching data for {len(track_ids)} track IDs")
+    if len(track_ids) == 0:
+        print("No track IDs left to fetch data for!")
+        exit(0)
+    else:
+        print(f"Fetching data for {len(track_ids)} track IDs")
 
     cookies_path = args.cookies_path
 
@@ -514,7 +545,16 @@ if __name__ == "__main__":
     headers = get_headers()
     url_getter = endpoint["url_getter"]
 
-    parallel_requests = args.parallel_requests
+    # I am not even sure if varying the number of parallel requests is even that beneficial for performance lol
+    # for the lyrics endpoint, we surely cannot send too much at once, as we will get 429 errors
+    parallel_request_defaults = {
+        "credits": 100,
+        "lyrics": 50,
+    }
+    parallel_requests = args.parallel_requests or parallel_request_defaults.get(
+        args.resource, 1
+    )
+
     print(
         f"Sending {parallel_requests} parallel requests"
         if parallel_requests > 1

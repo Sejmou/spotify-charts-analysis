@@ -207,7 +207,7 @@ class InternalRequestHeadersGetter:
                     driver.refresh()
                     print(f"Loaded cookies from {cookies_path} successfully")
                 else:
-                    if credentials_required is not None:
+                    if credentials_required:
                         username, password = get_spotify_credentials()
                         login_and_accept_cookies(
                             driver=driver,
@@ -282,8 +282,16 @@ def _open_credits_popup(driver: webdriver.Chrome):
 
 
 def _open_lyrics_view(driver: webdriver.Chrome):
-    lyrics_button = get_element_with_att_and_val(driver, "data-testid", "lyrics-button")
-    lyrics_button.click()
+    try:
+        lyrics_button = get_element_with_att_and_val(
+            driver, "data-testid", "lyrics-button"
+        )
+        lyrics_button.click()
+    except Exception as e:
+        print(f"Error opening lyrics view: {e}")
+        print(
+            "This might be because the webdriver is no longer logged in to Spotify. Try restarting if the script got stuck."
+        )
 
 
 def _is_internal_api_request(
