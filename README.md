@@ -61,7 +61,8 @@ pip install -e .
 ```
 Alternatively, you can of course also just install packages one-by-one as you are running into issues trying to execute things lol
 
-## Findings and Discoveries
+## Findings
 Track lyrics on Spotify can be incorrect, even for fairly popular songs (for example [this](https://open.spotify.com/track/59mdyQniSaNFeXaKMGu9RB) instrumental track that for some reason has lyrics).
 
-Apparently, track lyrics can only be fetched from the internal API if the requested track is available in the country associated with the Spotify account whose request headers are used for making the request.
+## Open Questions
+ - Identifying cause for 404 and 403 HTTP errors when fetching lyrics from the internal API: Initially, I assumed this has something to do with the availability of tracks (i.e. you can only fetch data for tracks that are available in the region of the user associated with the Spotify account used to fetch the data OR if you are making the request from a location where the track is available). This proved to be false: sometimes lyrics could also be fetched for tracks without any available market, or for tracks available in other markets, but not the one of the user.

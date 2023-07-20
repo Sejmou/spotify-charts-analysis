@@ -45,102 +45,7 @@ from helpers.util import (
 from helpers.scraping import internal_api_endpoints, InternalRequestHeadersGetter
 
 
-def sync_main(
-    url_getter: Callable[[str], str],
-    headers: dict,
-    output_path: str,
-    error_log_path: str,
-    track_ids: Set[str],
-    new_headers_getter: Callable[[], dict],
-):
-    """
-    Makes requests to an internal Spotify API for a list of track IDs and saves the results to the .jsonl output file path if no error was detected.
-    If something went wrong, the error is saved to the .jsonl error log file path.
-
-    Parameters
-    ----------
-    url_getter: Callable[[str], str]
-        A function that takes a track ID and returns the URL to request data for that track from an internal Spotify API
-    headers: dict
-        The headers to use for the requests
-    output_path: str
-        The path to the .jsonl file to save the results to
-    error_log_path: str
-        The path to the .jsonl file to save errors to
-    track_ids: List[str]
-        The track IDs to request data for
-    new_headers_getter: Callable[[], dict]
-        A function that returns new request headers. Used if a 401 status code is received
-    """
-
-    requests_without_429 = 0
-    status_code_counts = defaultdict(int)
-    processed_count = 0
-
-    for t_id in tqdm(track_ids):
-        if processed_count > 0 and processed_count % 100 == 0:
-            print(f"Status code stats after {processed_count} processed tracks:")
-            print(status_code_counts)
-        while True:
-            status_code = process_track_id_sync(
-                track_id=t_id,
-                request_url=url_getter(t_id),
-                request_headers=headers,
-                output_path=output_path,
-                error_log_path=error_log_path,
-            )
-            if status_code != 429:
-                requests_without_429 += 1
-                if status_code != 401:
-                    processed_count += 1
-                    status_code_counts[status_code] += 1
-                else:
-                    print("Got 401 status code, getting new headers")
-                    headers = new_headers_getter()
-                break
-            else:
-                print(f"Got 429 status code after {requests_without_429} requests")
-                requests_without_429 = 0
-                wait_time = random.uniform(1, 5)
-                print(f"Waiting {wait_time} seconds before trying again")
-                time.sleep(wait_time)
-
-
-def process_url_with_requests(url: str, headers: dict):
-    response = requests.get(url, headers=headers)
-    status_code = response.status_code
-    content = response.text
-    return status_code, content
-
-
-def process_track_id_sync(
-    track_id: str,
-    request_url: str,
-    request_headers: dict,
-    output_path: str,
-    error_log_path: str,
-    max_request_wait_time=0.3,
-):
-    random_wait_time = random.uniform(0, max_request_wait_time)
-    time.sleep(random_wait_time)
-    status_code, content = process_url_with_requests(
-        url=request_url, headers=request_headers
-    )
-    result = create_response_dict(
-        status_code=status_code,
-        content=content,
-        url=request_url,
-        track_id=track_id,
-    )
-    process_response_dict(
-        result=result,
-        output_path=output_path,
-        error_log_path=error_log_path,
-    )
-    return result["status_code"]
-
-
-async def async_main(
+async def get_data(
     url_getter: Callable[[str], str],
     headers: dict,
     output_path: str,
@@ -167,7 +72,7 @@ async def async_main(
             urls = [url_getter(t_id) for t_id in id_chunk]
             tasks = [
                 asyncio.create_task(
-                    get_data_async(
+                    make_request(
                         track_id=t_id,
                         request_url=url,
                         request_headers=headers,
@@ -247,7 +152,7 @@ async def async_main(
             print(status_code_counts)
 
 
-async def get_data_async(
+async def make_request(
     track_id: str,
     request_url: str,
     request_headers: dict,
@@ -266,6 +171,38 @@ async def get_data_async(
         track_id=track_id,
     )
     return response_data
+
+
+def make_request_sync(url: str, headers: dict):
+    response = requests.get(url, headers=headers)
+    status_code = response.status_code
+    content = response.text
+    return status_code, content
+
+
+def process_track_id_sync(
+    track_id: str,
+    request_url: str,
+    request_headers: dict,
+    output_path: str,
+    error_log_path: str,
+    max_request_wait_time=0.3,
+):
+    random_wait_time = random.uniform(0, max_request_wait_time)
+    time.sleep(random_wait_time)
+    status_code, content = make_request_sync(url=request_url, headers=request_headers)
+    result = create_response_dict(
+        status_code=status_code,
+        content=content,
+        url=request_url,
+        track_id=track_id,
+    )
+    process_response_dict(
+        result=result,
+        output_path=output_path,
+        error_log_path=error_log_path,
+    )
+    return result["status_code"]
 
 
 def create_response_dict(status_code: int, content: str, url: str, track_id: str):
@@ -410,11 +347,14 @@ def get_error_ids_to_skip(error_log_df: pd.DataFrame, status_codes_to_skip: Set[
         A set of track IDs that should be skipped
     """
     error_log_df = error_log_df[["track_id", "status_code"]]
+
     log_track_ids = set(error_log_df["track_id"].unique())
-    errors = error_log_df[error_log_df["status_code"].isin(status_codes_to_skip)]
-    relevant_error_ids = set(errors["track_id"].unique())
-    error_ids_to_skip = log_track_ids.difference(relevant_error_ids)
-    return error_ids_to_skip
+    unique_id_count = len(log_track_ids)
+    print(f"Found {unique_id_count} unique track IDs in error log")
+    irrelevant_error_ids = set(
+        error_log_df[error_log_df["status_code"].isin(status_codes_to_skip)].track_id
+    )
+    return irrelevant_error_ids
 
 
 if __name__ == "__main__":
@@ -551,9 +491,8 @@ if __name__ == "__main__":
             )
             if len(error_ids_to_skip) > 0:
                 print(
-                    f"Found {len(error_ids_to_skip)} track IDs that previously produced (only) either of HTTP status codes {status_codes_to_skip}"
+                    f"Found {len(error_ids_to_skip)} track IDs that previously produced either of HTTP status codes {status_codes_to_skip}"
                 )
-                print("These track IDs will be skipped")
                 track_ids = track_ids.difference(error_ids_to_skip)
             print()
     else:
@@ -593,24 +532,14 @@ if __name__ == "__main__":
         else "Sending synchronous requests"
     )
 
-    if parallel_requests > 1:
-        asyncio.run(
-            async_main(
-                url_getter=url_getter,
-                track_ids=track_ids,
-                headers=headers,
-                output_path=output_path,
-                error_log_path=error_log_path,
-                new_headers_getter=get_headers,
-                parallel_requests=parallel_requests,
-            )
-        )
-    else:
-        sync_main(
+    asyncio.run(
+        get_data(
             url_getter=url_getter,
             track_ids=track_ids,
             headers=headers,
             output_path=output_path,
             error_log_path=error_log_path,
             new_headers_getter=get_headers,
+            parallel_requests=parallel_requests,
         )
+    )
