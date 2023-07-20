@@ -19,6 +19,7 @@ setup(
         "inquirer",
         "spotipy",
         "aiohttp",
+        "pytest",
     ],
     packages=find_packages(),
     classifiers=[

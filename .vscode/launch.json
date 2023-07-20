@@ -5,7 +5,7 @@
       "name": "Debug get_credits.py",
       "type": "python",
       "request": "launch",
-      "program": "cli-scripts/get_credits.py",
+      "program": "cli_scripts/get_credits.py",
       "console": "integratedTerminal",
       "justMyCode": true,
       "args": [

@@ -35,7 +35,7 @@ def main(chart_file_path: str, output_dir: str):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Get Spotify API data for a list of tracks. Example usage: python cli-scripts/spotify_api/get_all.py -i data/top200_01-2017_06-2023/charts.parquet -o data/top200_01-2017_06-2023"
+        description="Get Spotify API data for a list of tracks. Example usage: python cli_scripts/spotify_api/get_all.py -i data/top200_01-2017_06-2023/charts.parquet -o data/top200_01-2017_06-2023"
     )
     parser.add_argument(
         "-i",

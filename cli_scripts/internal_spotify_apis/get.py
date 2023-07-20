@@ -16,7 +16,7 @@ The exact usage is a bit more complicated and more parameters/input args are sup
 
 Features both a synchronous and an asynchronous implementation.
 
-Known issues: 
+Known issues:
  - The login (required for the lyrics script) can get blocked if the script is rerun too often without specifying
    cookies belonging to a logged in Spotify account (obtained via `save_cookies.py`).
  - If the lyrics script runs for a while (approximately two to three hours), it can happen that it gets stuck
@@ -373,7 +373,7 @@ def ip_info(addr=""):
         addr (str): IP address to fetch information for. If not provided, the information for the current IP is fetched.
 
     Returns:
-        None
+        dict: A dictionary containing the IP information.
 
     Prints the retrieved IP information, including various attributes and their corresponding values.
     If an error occurs during the request, an appropriate error message is printed.
@@ -387,6 +387,34 @@ def ip_info(addr=""):
         return data
     else:
         raise Exception("Error occurred while fetching IP information.")
+
+
+def get_error_ids_to_skip(error_log_df: pd.DataFrame, status_codes_to_skip: Set[int]):
+    """
+    Returns a set of track IDs that should be skipped based on the errors in the error log.
+
+    Parameters
+    ----------
+    error_log_df: pd.DataFrame
+        A DataFrame containing the error log data (read from the error log file) with the following columns:
+        - track_id: str
+            The ID of the track for which data was requested
+        - status_code: int
+            The status code of the response
+    status_codes_to_skip: Set[int]
+        A set of status codes that should be skipped
+
+    Returns
+    -------
+    Set[str]
+        A set of track IDs that should be skipped
+    """
+    error_log_df = error_log_df[["track_id", "status_code"]]
+    log_track_ids = set(error_log_df["track_id"].unique())
+    errors = error_log_df[error_log_df["status_code"].isin(status_codes_to_skip)]
+    relevant_error_ids = set(errors["track_id"].unique())
+    error_ids_to_skip = log_track_ids.difference(relevant_error_ids)
+    return error_ids_to_skip
 
 
 if __name__ == "__main__":
@@ -515,14 +543,18 @@ if __name__ == "__main__":
             # file is empty
             print("No errors found in error log file")
         else:
-            # identify 403 or 404 errors in logs and skip associated track IDs
-            errors = errors[errors["status_code"].isin([403, 404])]
-            error_ids = set(errors["track_id"].unique())
-            if len(error_ids) > 0:
+            # create sets of track IDs by error code
+            errors = errors[["track_id", "status_code"]]
+            status_codes_to_skip = set([404, 403])
+            error_ids_to_skip = get_error_ids_to_skip(
+                error_log_df=errors, status_codes_to_skip=status_codes_to_skip
+            )
+            if len(error_ids_to_skip) > 0:
                 print(
-                    f"Found {len(error_ids)} track IDs with 403 or 404 errors (will be skipped)"
+                    f"Found {len(error_ids_to_skip)} track IDs that previously produced (only) either of HTTP status codes {status_codes_to_skip}"
                 )
-                track_ids = track_ids.difference(error_ids)
+                print("These track IDs will be skipped")
+                track_ids = track_ids.difference(error_ids_to_skip)
             print()
     else:
         print(os.path.dirname(error_log_path))
