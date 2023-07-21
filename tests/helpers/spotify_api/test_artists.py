@@ -1,8 +1,8 @@
-from cli_scripts.spotify_api.get_artist_metadata import (
+from helpers.spotify_api.artists import (
     get_artist_metadata_from_api,
     _process_img_data,
     _process_genres,
-    _process_remaining_artist_data,
+    _process_remaining_data,
 )
 from helpers.spotify_util import create_spotipy_client
 import pandas as pd
@@ -45,7 +45,7 @@ def test_genres():
 
 
 def test_remaining_data():
-    data = _process_remaining_artist_data(data=example_api_resp)
+    data = _process_remaining_data(data=example_api_resp)
     assert isinstance(data, dict)
     assert isinstance(data["artist_id"], str)
     assert isinstance(data["name"], str)

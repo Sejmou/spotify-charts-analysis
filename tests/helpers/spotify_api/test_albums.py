@@ -1,4 +1,4 @@
-from cli_scripts.spotify_api.get_album_metadata import (
+from helpers.spotify_api.albums import (
     get_album_metadata_from_api,
     _process_img_data,
     _process_artists,

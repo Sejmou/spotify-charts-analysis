@@ -1,4 +1,4 @@
-from cli_scripts.spotify_api.get_track_metadata import (
+from helpers.spotify_api.tracks import (
     get_track_metadata_from_api,
     _process_artists,
     _process_markets,
