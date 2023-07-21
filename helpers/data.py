@@ -11,6 +11,14 @@ def create_data_path(filename):
     )
 
 
+def write_dfs_in_dict_to_parquet_files(df_dict: dict, output_dir: str):
+    for df_name, df in df_dict.items():
+        filename = f"{df_name}.parquet"
+        df_path = os.path.join(output_dir, filename)
+        df.to_parquet(df_path)
+        print(f"Saved {df_name} to '{df_path}'")
+
+
 def load_parquet_files_in_dir(dir_path: str, index_col=None, new_index_name=None):
     """
     Load all .parquet files in a directory into a dictionary of DataFrames.

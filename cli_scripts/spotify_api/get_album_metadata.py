@@ -5,8 +5,10 @@ import pandas as pd
 from helpers.spotify_util import create_spotipy_client
 from helpers.util import (
     split_into_chunks_of_size,
-    create_data_source_and_timestamp_file,
 )
+from helpers.data import write_dfs_in_dict_to_parquet_files
+import spotipy
+from typing import List
 
 
 def main(input_path: str, output_dir: str):
@@ -34,143 +36,136 @@ def main(input_path: str, output_dir: str):
 
     spotify = create_spotipy_client()
 
-    metadata_dfs = (
-        []
-    )  # list of dataframes with album metadata of shape (album_id, metadata_1, ..., metadata_n)
-    album_imgs = []  # tuples of shape ('album_id', 'url', 'width', 'height')
-    album_artists = []  # tuples of shape ('album_id', 'artist_id', 'pos')
-    album_markets = []  # tuples of shape ('album_id', 'market')
-    album_copyrights = []  # tuples of shape ('album_id', 'text', 'type')
+    df_dict = get_album_metadata_from_api(album_ids=album_ids, spotify=spotify)
+    write_dfs_in_dict_to_parquet_files(df_dict=df_dict, output_dir=output_dir)
 
+
+def get_album_metadata_from_api(album_ids: list, spotify: spotipy.Spotify):
     chunk_size = 20
     album_ids_chunks = split_into_chunks_of_size(album_ids, chunk_size)
     print(f"Fetching data in {len(album_ids_chunks)} chunks of size {chunk_size}...")
 
+    imgs = []  # tuples of shape ('album_id', 'url', 'width', 'height')
+    artists = []  # tuples of shape ('album_id', 'artist_id', 'pos')
+    markets = []  # tuples of shape ('album_id', 'market')
+    copyrights = []  # tuples of shape ('album_id', 'text', 'type')
+    metadata = []  # list of dictionaries for all remaining album metadata
+
     with tqdm(total=len(album_ids_chunks)) as pbar:
         for album_ids in album_ids_chunks:
             api_resp = spotify.albums(album_ids)["albums"]
-
-            metadata = pd.DataFrame(
-                [
-                    process_album_data_from_api(
-                        data=album_data,
-                        album_imgs=album_imgs,
-                        album_artists=album_artists,
-                        album_markets=album_markets,
-                        album_copyrights=album_copyrights,
+            for album_data in api_resp:
+                if album_data is None:
+                    raise ValueError(
+                        'Received "None" as response from spotipy. You probably provided one or more invalid album IDs.'
                     )
-                    for album_data in api_resp
-                ]
-            )
-            metadata_dfs.append(metadata)
+                album_id = album_data["id"]
+                imgs.extend(
+                    _process_img_data(album_id=album_id, images=album_data["images"])
+                )
+                artists.extend(
+                    _process_artists(album_id=album_id, artists=album_data["artists"])
+                )
+                markets.extend(
+                    _process_markets(
+                        album_id=album_id, markets=album_data["available_markets"]
+                    )
+                )
+                copyrights.extend(
+                    _process_copyrights(
+                        album_id=album_id, copyrights=album_data["copyrights"]
+                    )
+                )
+            metadata.append(_process_remaining_data(data=album_data))
             pbar.update(1)
 
-    metadata_df = pd.concat(metadata_dfs, ignore_index=True)
-    metadata_path = os.path.join(output_dir, "metadata.parquet")
-    metadata_df.to_parquet(metadata_path)
-    print(f"Saved album metadata to '{metadata_path}'")
+    df_dict = {}
 
-    album_imgs_df = pd.DataFrame(
-        album_imgs, columns=["album_id", "url", "width", "height"]
+    df_dict["metadata"] = pd.DataFrame(metadata)
+    df_dict["metadata"].rename(columns={"id": "album_id"}, inplace=True)
+    df_dict["metadata"].set_index("album_id", inplace=True)
+
+    df_dict["images"] = pd.DataFrame(
+        imgs, columns=["album_id", "url", "width", "height"]
     )
-    album_imgs_df.set_index("album_id", inplace=True)
-    album_imgs_path = os.path.join(output_dir, "imgs.parquet")
-    album_imgs_df.to_parquet(album_imgs_path)
-    print(f"Saved album images to '{album_imgs_path}'")
+    df_dict["images"].set_index("album_id", inplace=True)
 
-    album_artists_df = pd.DataFrame(
-        album_artists, columns=["album_id", "artist_id", "pos"]
-    )
-    album_artists_df.set_index("album_id", inplace=True)
-    album_artists_path = os.path.join(output_dir, "artists.parquet")
-    album_artists_df.to_parquet(album_artists_path)
-    print(f"Saved album artists to '{album_artists_path}'")
+    df_dict["artists"] = pd.DataFrame(artists, columns=["album_id", "artist_id", "pos"])
+    df_dict["artists"].set_index("album_id", inplace=True)
 
-    album_markets_df = pd.DataFrame(album_markets, columns=["album_id", "market"])
-    album_markets_df.set_index("album_id", inplace=True)
-    album_markets_path = os.path.join(output_dir, "markets.parquet")
-    album_markets_df.to_parquet(album_markets_path)
-    print(f"Saved album markets to '{album_markets_path}'")
-
-    album_copyrights_df = pd.DataFrame(
-        album_copyrights,
+    df_dict["markets"] = pd.DataFrame(markets, columns=["album_id", "market"])
+    df_dict["markets"].set_index("album_id", inplace=True)
+    df_dict["copyrights"] = pd.DataFrame(
+        copyrights,
         columns=["album_id", "text", "type"],
     )
-    album_copyrights_df.set_index("album_id", inplace=True)
-    album_copyrights_path = os.path.join(output_dir, "copyrights.parquet")
-    album_copyrights_df.to_parquet(album_copyrights_path)
-    print(f"Saved album copyrights to '{album_copyrights_path}'")
+    df_dict["copyrights"].set_index("album_id", inplace=True)
 
-    create_data_source_and_timestamp_file(
-        dir_path=output_dir,
-        data_source="Spotify API (using the .albums() method of the Spotify client provided by the spotipy Python library)",
-    )
+    return df_dict
 
 
-def process_album_data_from_api(
-    data: dict,
-    album_imgs: list,
-    album_artists: list,
-    album_markets: list,
-    album_copyrights: list,
-):
+def _process_img_data(album_id: str, images: List[dict]):
     """
-    Processes album data from the Spotify API into a format that can be
-    written to a dataframe.
-
-    Args:
-        data (dict): Dictionary of album metadata from the Spotify API
-        album_imgs (list): List of tuples of shape (album_id, url, width, height)
-        album_artists (list): List of tuples of shape (album_id, artist_id, pos)
-        album_markets (list): List of tuples of shape (album_id, market)
-        album_copyrights (list): List of tuples of shape (album_id, text, type)
-
-    Returns:
-        pd.Series: Series of album metadata in a format that can be written to a dataframe
-
-    This function also modifies the following arguments (lists) in-place (appending items to them):
-        - album_imgs
-        - album_artists
-        - album_markets
-        - album_copyright
+    Processes image data from the Spotify API into a list of tuples.
     """
-    for img_data in data["images"]:
-        album_imgs.append(
+    img_tuples = []
+    for img_data in images:
+        img_tuples.append(
             (
-                data["id"],
+                album_id,
                 img_data["url"],
                 img_data["width"],
                 img_data["height"],
             )
         )
+    return img_tuples
 
+
+def _process_artists(album_id: str, artists: List[dict]):
+    """
+    Processes artist data from the Spotify API into a list of tuples.
+    """
+    artist_tuples = []
+    artist_ids = [artist["id"] for artist in artists]
+    for i, artist_id in enumerate(artist_ids):
+        artist_tuples.append((album_id, artist_id, i + 1))
+    return artist_tuples
+
+
+def _process_markets(album_id: str, markets: List[str]):
+    """
+    Processes market data from the Spotify API into a list of tuples.
+    """
+    market_tuples = []
+    for market in markets:
+        market_tuples.append((album_id, market))
+    return market_tuples
+
+
+def _process_copyrights(album_id: str, copyrights: List[str]):
+    """
+    Processes market data from the Spotify API into a list of tuples.
+    """
+    copyright_tuples = []
+    for copyright_val in copyrights:
+        copyright_tuples.append(
+            (album_id, copyright_val["text"], copyright_val["type"])
+        )
+    return copyright_tuples
+
+
+def _process_remaining_data(data: dict):
+    """
+    Processes remaining album data from the Spotify API, returning it as a dictionary.
+    """
     for source, url in data["external_urls"].items():
         if source != "spotify":
-            data["source"] = url
+            data[f"{source}_url"] = url
 
     for platform, p_id in data["external_ids"].items():
-        data[platform] = p_id
+        data[f"{platform}_url"] = p_id
 
-    artist_ids = [artist["id"] for artist in data["artists"]]
-    for i, artist_id in enumerate(artist_ids):
-        album_artists.append((data["id"], artist_id, i + 1))
-
-    for market in data["available_markets"]:
-        album_markets.append((data["id"], market))
-
-    for copyright_val in data["copyrights"]:
-        album_copyrights.append(
-            (data["id"], copyright_val["text"], copyright_val["type"])
-        )
-
-    series = pd.Series(data)
-
-    # make sure the 'id' comes first in the series and rename it to 'album_id'
-    id_value = series.pop("id")
-    id_series = pd.Series(id_value, index=["album_id"])
-    series = pd.concat([id_series, series])
-
-    series.release_date = pd.to_datetime(series.release_date)
+    data["release_date"] = pd.to_datetime(data["release_date"])
 
     attrs_to_drop = [
         "type",  # always 'album'
@@ -184,12 +179,13 @@ def process_album_data_from_api(
         "genres",  # while this prop exists, it actually always contains an empty list :(
         "copyrights",  # already processed
         "tracks",  # not interested in that atm - also, too much data
-        "popularity",  # constantly changing, not useful for static analysis
+        "popularity",  # pretty arbitrary metric (how is it even computed), also constantly changing
     ]
 
-    series = series.drop(labels=attrs_to_drop)
+    for attr in attrs_to_drop:
+        del data[attr]
 
-    return series
+    return data
 
 
 if __name__ == "__main__":
