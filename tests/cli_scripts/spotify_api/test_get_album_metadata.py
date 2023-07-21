@@ -9,7 +9,7 @@ from cli_scripts.spotify_api.get_album_metadata import (
 from helpers.spotify_util import create_spotipy_client
 import pandas as pd
 
-# example_track_id = "0S38Oso3I9vpDXcTb7kYt9"
+
 example_album_id = "1gjugH97doz3HktiEjx2vY"
 spotify = create_spotipy_client()
 example_api_resp = spotify.albums([example_album_id])["albums"][0]

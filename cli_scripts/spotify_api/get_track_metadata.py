@@ -5,8 +5,9 @@ import pandas as pd
 from helpers.spotify_util import create_spotipy_client
 from helpers.util import (
     split_into_chunks_of_size,
-    create_data_source_and_timestamp_file,
 )
+from helpers.data import write_dfs_in_dict_to_parquet_files
+import spotipy
 
 
 def main(input_path: str, output_dir: str):
@@ -34,11 +35,16 @@ def main(input_path: str, output_dir: str):
 
     spotify = create_spotipy_client()
 
-    metadata_dfs = (
+    df_dict = get_track_metadata_from_api(track_ids=track_ids, spotify=spotify)
+    write_dfs_in_dict_to_parquet_files(df_dict=df_dict, output_dir=output_dir)
+
+
+def get_track_metadata_from_api(track_ids: list, spotify: spotipy.Spotify):
+    artists = []  # tuples of shape ('track_id', 'artist_id', 'pos')
+    markets = []  # tuples of shape ('track_id', 'market')
+    metadata = (
         []
-    )  # list of dataframes with track metadata of shape (track_id, metadata_1, ..., metadata_n)
-    track_artists = []  # tuples of shape ('track_id', 'artist_id', 'pos')
-    track_markets = []  # tuples of shape ('track_id', 'market')
+    )  # list of dictionaries for all remaining track metadata (excluding artists and markets)
 
     chunk_size = 50
     track_ids_chunks = split_into_chunks_of_size(track_ids, chunk_size)
@@ -46,75 +52,80 @@ def main(input_path: str, output_dir: str):
 
     with tqdm(total=len(track_ids_chunks)) as pbar:
         for track_ids in track_ids_chunks:
-            api_resp = pd.DataFrame(spotify.tracks(track_ids)["tracks"])
-            metadata = api_resp.apply(
-                process_track_data_from_api,
-                axis=1,
-                track_artists=track_artists,
-                track_markets=track_markets,
-            )
-            metadata_dfs.append(metadata)
-            pbar.update(1)
+            api_resp = spotify.tracks(track_ids)["tracks"]
+            for track_data in api_resp:
+                track_id = track_data["id"]
+                artists.extend(_process_artists(track_id, track_data["artists"]))
+                markets.extend(
+                    _process_markets(track_id, track_data["available_markets"])
+                )
+                metadata.append(_process_remaining_data(track_data))
+                pbar.update(1)
 
-    metadata_df = pd.concat(metadata_dfs, ignore_index=True)
-    metadata_df.set_index("track_id", inplace=True)
-    metadata_path = os.path.join(output_dir, "metadata.parquet")
-    metadata_df.to_parquet(metadata_path)
-    print(f"Saved track metadata to '{metadata_path}'")
+    df_dict = {}
 
-    track_artists_df = pd.DataFrame(
-        track_artists, columns=["track_id", "artist_id", "pos"]
-    )
-    track_artists_df.set_index("track_id", inplace=True)
-    artists_path = os.path.join(output_dir, "artists.parquet")
-    track_artists_df.to_parquet(artists_path)
-    print(f"Saved track artists to '{artists_path}'")
+    df_dict["metadata"] = pd.DataFrame(metadata)
+    df_dict["metadata"].set_index("track_id", inplace=True)
 
-    track_markets_df = pd.DataFrame(track_markets, columns=["track_id", "market"])
-    track_markets_df.set_index("track_id", inplace=True)
-    markets_path = os.path.join(output_dir, "markets.parquet")
-    track_markets_df.to_parquet(markets_path)
-    print(f"Saved track markets to '{markets_path}'")
+    df_dict["artists"] = pd.DataFrame(artists, columns=["track_id", "artist_id", "pos"])
+    df_dict["artists"].set_index("track_id", inplace=True)
 
-    create_data_source_and_timestamp_file(
-        dir_path=output_dir,
-        data_source="Spotify API (using the .tracks() method of the Spotify client provided by the spotipy Python library)",
-    )
+    df_dict["markets"] = pd.DataFrame(markets, columns=["track_id", "market"])
+    df_dict["markets"].set_index("track_id", inplace=True)
+
+    return df_dict
 
 
-def process_track_data_from_api(
-    data: pd.Series, track_artists: list, track_markets: list
-):
+def _process_artists(track_id: str, artists: list):
     """
-    Processes the track data returned by the Spotify API.
+    Processes the artist data for a single track returned by the Spotify API.
 
     Args:
-        data: A dictionary containing the track data returned by the Spotify API.
-        track_artists: A list of tuples of shape ('track_id', 'artist_id', 'pos').
-        track_markets: A list of tuples of shape ('track_id', 'market').
-    """
+        track_id: The ID of the track.
+        artists: A list of dictionaries containing the artist data for the track.
 
+    Returns:
+        A list of tuples of shape ('track_id', 'artist_id', 'pos').
+    """
+    track_artists = []
+    for i, artist in enumerate(artists):
+        track_artists.append((track_id, artist["id"], i + 1))
+    return track_artists
+
+
+def _process_markets(track_id: str, markets: list):
+    """
+    Processes the market data for a single track returned by the Spotify API.
+
+    Args:
+        track_id: The ID of the track.
+        markets: A list of dictionaries containing the market data for the track.
+
+    Returns:
+        A list of tuples of shape ('track_id', 'market').
+    """
+    track_markets = []
+    for market in markets:
+        track_markets.append((track_id, market))
+    return track_markets
+
+
+def _process_remaining_data(data: dict):
+    """
+    Processes the remaining track data returned by the Spotify API, returning it as a dictionary.
+    """
     for source, url in data["external_urls"].items():
         if source != "spotify":
-            data[source] = url
+            data[f"{source}_url"] = url
 
     for platform, p_id in data["external_ids"].items():
-        data[platform] = p_id
+        data[f"{platform}_url"] = p_id
+
     data["album_id"] = data["album"]["id"]
 
-    artist_ids = [artist["id"] for artist in data["artists"]]
-    for i, artist_id in enumerate(artist_ids):
-        track_artists.append((data["id"], artist_id, i + 1))
-
-    for market in data["available_markets"]:
-        track_markets.append((data["id"], market))
-
-    series = pd.Series(data)
-
-    # make sure the 'id' comes first in the series and is named 'track_id'
-    id_value = series.pop("id")
-    id_series = pd.Series(id_value, index=["track_id"])
-    series = pd.concat([id_series, series])
+    # rename id to track_id
+    data["track_id"] = data["id"]
+    del data["id"]
 
     attrs_to_drop = [
         "type",  # always 'track'
@@ -129,9 +140,10 @@ def process_track_data_from_api(
         "popularity",  # constantly changing, not useful for static analysis
     ]
 
-    series = series.drop(labels=attrs_to_drop)
+    for attr in attrs_to_drop:
+        del data[attr]
 
-    return series
+    return data
 
 
 if __name__ == "__main__":
