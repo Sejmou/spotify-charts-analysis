@@ -7,28 +7,69 @@ then artist metadata for every artist in the album metadata AND track metadata (
 """
 import argparse
 import os
-from get_album_metadata import main as get_album_metadata
-from get_track_metadata import main as get_track_metadata
-from get_artist_metadata import main as get_artist_metadata
+from get_album_metadata import (
+    main as get_album_metadata_main,
+    get_album_metadata_from_api,
+)
+from get_track_metadata import (
+    main as get_track_metadata_main,
+    get_track_metadata_from_api,
+)
+from get_artist_metadata import (
+    main as get_artist_metadata__main,
+    get_artist_metadata_from_api,
+)
+from typing import List
+import spotipy
+
+
+def get_metadata_from_spotify_api(track_ids: List[str], spotify: spotipy.Spotify):
+    """
+    Gets track, album, and artist metadata for a list of tracks from the Spotify API.
+
+    Args:
+        track_ids: A list of track IDs.
+        spotify: A spotipy Spotify client.
+
+    Returns:
+        A dictionary of dictionaries of DataFrames with the following keys: "tracks", "albums", "artists".
+    """
+    track_metadata = get_track_metadata_from_api(track_ids=track_ids, spotify=spotify)
+
+    album_ids = track_metadata["metadata"]["album_id"].unique().tolist()
+    album_metadata = get_album_metadata_from_api(album_ids=album_ids, spotify=spotify)
+
+    artist_ids = album_metadata["artists"]["artist_id"].unique().tolist()
+    artist_ids.extend(track_metadata["artists"]["artist_id"].unique().tolist())
+    artist_ids = list(set(artist_ids))
+    artist_metadata = get_artist_metadata_from_api(
+        artist_ids=artist_ids, spotify=spotify
+    )
+
+    return {
+        "tracks": track_metadata,
+        "albums": album_metadata,
+        "artists": artist_metadata,
+    }
 
 
 def main(chart_file_path: str, output_dir: str):
     tracks_subdir = os.path.join(output_dir, "tracks")
     print(f"Getting track metadata for {chart_file_path}")
-    get_track_metadata(input_path=chart_file_path, output_dir=tracks_subdir)
+    get_track_metadata_main(input_path=chart_file_path, output_dir=tracks_subdir)
 
     track_metadata_path = os.path.join(tracks_subdir, "metadata.parquet")
     albums_subdir = os.path.join(output_dir, "albums")
     print()
     print(f"Getting album metadata for {track_metadata_path}")
-    get_album_metadata(input_path=track_metadata_path, output_dir=albums_subdir)
+    get_album_metadata_main(input_path=track_metadata_path, output_dir=albums_subdir)
 
     album_artists_path = os.path.join(albums_subdir, "artists.parquet")
     track_artists_path = os.path.join(tracks_subdir, "artists.parquet")
     artists_subdir = os.path.join(output_dir, "artists")
     print()
     print(f"Getting artist metadata for {album_artists_path} and {track_artists_path}")
-    get_artist_metadata(
+    get_artist_metadata__main(
         input_paths=[album_artists_path, track_artists_path], output_dir=artists_subdir
     )
 
