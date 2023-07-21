@@ -16,13 +16,17 @@ example_api_resp = spotify.albums([example_album_id])["albums"][0]
 
 
 def test_get_album_metadata_from_api():
-    dfs = get_album_metadata_from_api(album_ids=[example_album_id], spotify=spotify)
+    dfs = get_album_metadata_from_api(
+        album_ids=[example_album_id, example_album_id], spotify=spotify
+    )
     assert isinstance(dfs, dict)
     assert dfs.keys() == {"metadata", "images", "artists", "markets", "copyrights"}
     for df_name, df in dfs.items():
         assert isinstance(df, pd.DataFrame), f"{df_name} is not a DataFrame"
         assert not df.empty, f"{df_name} is empty"
         assert df.index.name == "album_id", f"{df_name} index is not 'album_id'"
+        if df_name == "metadata":
+            assert df.shape[0] == 2
 
 
 def test_process_img_data():
@@ -52,7 +56,7 @@ def test_process_markets():
         validate_market_tuple(t)
 
 
-def test_process_copyrigths():
+def test_process_copyrights():
     copyrigths = _process_copyrights(
         album_id=example_album_id, copyrights=example_api_resp["copyrights"]
     )
@@ -65,7 +69,7 @@ def test_process_remaining_data():
     data = _process_remaining_data(data=example_api_resp)
     assert isinstance(data, dict)
     assert data["album_type"] in ["album", "single", "compilation"]
-    assert isinstance(data["id"], str)
+    assert isinstance(data["album_id"], str)
     assert isinstance(data["name"], str)
     assert isinstance(data["release_date"], pd.Timestamp)
     assert isinstance(data["release_date_precision"], str)

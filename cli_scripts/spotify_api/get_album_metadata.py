@@ -76,13 +76,12 @@ def get_album_metadata_from_api(album_ids: list, spotify: spotipy.Spotify):
                         album_id=album_id, copyrights=album_data["copyrights"]
                     )
                 )
-            metadata.append(_process_remaining_data(data=album_data))
+                metadata.append(_process_remaining_data(data=album_data))
             pbar.update(1)
 
     df_dict = {}
 
     df_dict["metadata"] = pd.DataFrame(metadata)
-    df_dict["metadata"].rename(columns={"id": "album_id"}, inplace=True)
     df_dict["metadata"].set_index("album_id", inplace=True)
 
     df_dict["images"] = pd.DataFrame(
@@ -181,6 +180,10 @@ def _process_remaining_data(data: dict):
         "tracks",  # not interested in that atm - also, too much data
         "popularity",  # pretty arbitrary metric (how is it even computed), also constantly changing
     ]
+
+    # rename id to album_id
+    data["album_id"] = data["id"]
+    del data["id"]
 
     for attr in attrs_to_drop:
         del data[attr]

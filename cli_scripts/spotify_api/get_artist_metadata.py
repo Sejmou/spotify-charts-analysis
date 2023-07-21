@@ -5,8 +5,10 @@ import pandas as pd
 from helpers.spotify_util import create_spotipy_client
 from helpers.util import (
     split_into_chunks_of_size,
-    create_data_source_and_timestamp_file,
 )
+from helpers.data import write_dfs_in_dict_to_parquet_files
+from typing import List
+import spotipy
 
 
 def main(input_paths: list, output_dir: str):
@@ -38,11 +40,14 @@ def main(input_paths: list, output_dir: str):
 
     spotify = create_spotipy_client()
 
-    metadata_dfs = (
-        []
-    )  # list of dataframes with artist metadata of shape (artist_id, metadata_1, ..., metadata_n)
+    df_dict = get_artist_metadata_from_api(artist_ids=artist_ids, spotify=spotify)
+    write_dfs_in_dict_to_parquet_files(df_dict=df_dict, output_dir=output_dir)
+
+
+def get_artist_metadata_from_api(artist_ids: list, spotify: spotipy.Spotify):
     artist_genres = []  # tuples of shape ('artist_id', 'genre')
     artist_images = []  # tuples of shape ('artist_id', 'url', 'width', 'height')
+    metadata = []  # list of dictionaries for all remaining artist metadata
 
     chunk_size = (
         50  # maximum number of artist IDs that can be fetched in a single API call
@@ -53,94 +58,75 @@ def main(input_paths: list, output_dir: str):
     with tqdm(total=len(artist_ids_chunks)) as pbar:
         for artist_ids in artist_ids_chunks:
             api_resp = spotify.artists(artist_ids)["artists"]
-
-            metadata = pd.DataFrame(
-                [
-                    process_artist_data_from_api(
-                        data=artist_data,
-                        artist_genres=artist_genres,
-                        artist_images=artist_images,
+            for artist_data in api_resp:
+                if artist_data is None:
+                    raise ValueError(
+                        'Received "None" as response from spotipy. You probably provided one or more invalid artist IDs.'
                     )
-                    for artist_data in api_resp
-                ]
-            )
-            metadata_dfs.append(metadata)
-            pbar.update(1)
+                artist_id = artist_data["id"]
+                artist_genres.extend(_process_genres(artist_id, artist_data["genres"]))
+                artist_images.extend(
+                    _process_img_data(artist_id, artist_data["images"])
+                )
+                metadata.append(_process_remaining_artist_data(artist_data))
+                pbar.update(1)
 
-    metadata_df = pd.concat(metadata_dfs, ignore_index=True)
-    metadata_df.set_index("artist_id", inplace=True)
-    metadata_path = os.path.join(output_dir, "metadata.parquet")
-    metadata_df.to_parquet(metadata_path)
-    print(f"Saved artist metadata to '{metadata_path}'")
+    df_dict = {}
 
-    artist_genres_df = pd.DataFrame(artist_genres, columns=["artist_id", "genre"])
-    artist_genres_df.set_index("artist_id", inplace=True)
-    artist_genres_path = os.path.join(output_dir, "genres.parquet")
-    artist_genres_df.to_parquet(artist_genres_path)
-    print(f"Saved artist genres to '{artist_genres_path}'")
+    df_dict["metadata"] = pd.DataFrame(metadata)
+    df_dict["metadata"].set_index("artist_id", inplace=True)
 
-    artist_images_df = pd.DataFrame(
+    df_dict["genres"] = pd.DataFrame(artist_genres, columns=["artist_id", "genre"])
+    df_dict["genres"].set_index("artist_id", inplace=True)
+
+    df_dict["images"] = pd.DataFrame(
         artist_images, columns=["artist_id", "url", "width", "height"]
     )
-    artist_images_df.set_index("artist_id", inplace=True)
-    artist_images_path = os.path.join(output_dir, "images.parquet")
-    artist_images_df.to_parquet(artist_images_path)
-    print(f"Saved artist images to '{artist_images_path}'")
+    df_dict["images"].set_index("artist_id", inplace=True)
 
-    create_data_source_and_timestamp_file(
-        dir_path=output_dir,
-        data_source="Spotify API (using the .artists() method of the Spotify client provided by the spotipy Python library)",
-    )
+    return df_dict
 
 
-def process_artist_data_from_api(
-    data: dict,
-    artist_genres: list,
-    artist_images: list,
-):
+def _process_img_data(artist_id: str, images: List[dict]):
     """
-    Processes artist data from the Spotify API into a format that can be
+    Processes artist image data from the Spotify API into a format that can be
     written to a dataframe.
 
     Args:
-        data (dict): Dictionary of artist metadata from the Spotify API
-        artist_genres (list): List of tuples of shape (artist_id, genre)
-        artist_images (list): List of tuples of shape (artist_id, url, width, height)
+        artist_id (str): ID of the artist
+        images (List[dict]): List of image data from the Spotify API
 
     Returns:
-        pd.Series: Series of artist metadata in a format that can be written to a dataframe
-
-    This function also modifies the following arguments (lists) in-place (appending items to them):
-        - artist_genres
-        - artist_images
+        List[tuple]: List of tuples of shape (artist_id, url, width, height)
 
     """
+    return [
+        (
+            artist_id,
+            img_data["url"],
+            img_data["width"],
+            img_data["height"],
+        )
+        for img_data in images
+    ]
+
+
+def _process_genres(artist_id: str, genres: List[str]):
+    artist_genres = []
+    for genre in genres:
+        artist_genres.append((artist_id, genre))
+    return artist_genres
+
+
+def _process_remaining_artist_data(
+    data: dict,
+):
     # for some reason, the followers prop contains a dict with the key 'total' and a value that is the number of followers and a 'href' key that is always None
     data["followers"] = data["followers"]["total"]
 
     for source, url in data["external_urls"].items():
         if source != "spotify":
-            data["source"] = url
-
-    for genre in data["genres"]:
-        artist_genres.append((data["id"], genre))
-
-    for img_data in data["images"]:
-        artist_images.append(
-            (
-                data["id"],
-                img_data["url"],
-                img_data["width"],
-                img_data["height"],
-            )
-        )
-
-    series = pd.Series(data)
-
-    # make sure the 'id' comes first in the series and rename it to 'artist_id'
-    id_value = series.pop("id")
-    id_series = pd.Series(id_value, index=["artist_id"])
-    series = pd.concat([id_series, series])
+            data[f"{source}_url"] = url
 
     attrs_to_drop = [
         "type",  # always 'artist'
@@ -151,9 +137,14 @@ def process_artist_data_from_api(
         "genres",  # already processed
     ]
 
-    series = series.drop(labels=attrs_to_drop)
+    # rename id to artist_id
+    data["artist_id"] = data["id"]
+    del data["id"]
 
-    return series
+    for attr in attrs_to_drop:
+        del data[attr]
+
+    return data
 
 
 if __name__ == "__main__":
