@@ -52,6 +52,7 @@ def combine_csv_files(
     directory,
     start_date_filter: pd.Timestamp = None,
     end_date_filter: pd.Timestamp = None,
+    drop_redundant_columns: bool = False,
 ):
     filenames = [file for file in os.listdir(directory) if file.endswith(".csv")]
 
@@ -101,6 +102,23 @@ def combine_csv_files(
     if end_date_filter is not None:
         combined_df = combined_df[combined_df.date <= end_date_filter]
 
+    # change data types to reduce memory usage
+    # TODO: doesn't work for some reason (output file size not changing at all?!)
+    combined_df["pos"] = pd.to_numeric(combined_df.pos, downcast="unsigned")
+    combined_df["streams"] = combined_df.streams.astype("uint64")
+    combined_df["region_code"] = combined_df.region_code.astype("category")
+
+    if drop_redundant_columns:
+        columns_to_drop = [
+            "artist_names",
+            "track_name",
+            "source",
+            "peak_rank",
+            "previous_rank",
+            "days_on_chart",
+        ]
+        combined_df = combined_df.drop(columns=columns_to_drop)
+
     return combined_df
 
 
@@ -140,6 +158,12 @@ if __name__ == "__main__":
         help="the end date (inclusive) of the date range to include in the output file (format: YYYY-MM-DD)",
         required=True,
     )
+    parser.add_argument(
+        "-d",
+        "--drop_redundant_columns",
+        action="store_true",
+        help="drop redundant columns that can be derived from within dataset or data from Spotify API ('artist_names', 'track_name', 'source', 'peak_rank', 'previous_rank', 'days_on_chart')",
+    )
 
     args = parser.parse_args()
 
@@ -166,7 +190,11 @@ if __name__ == "__main__":
         print(f"Invalid end date filter provided: {args.end_date}")
         exit(1)
 
-    combined_data = combine_csv_files(input_dir, start_date_filter, end_date_filter)
+    drop_redundant_columns = args.drop_redundant_columns
+
+    combined_data = combine_csv_files(
+        input_dir, start_date_filter, end_date_filter, drop_redundant_columns
+    )
 
     print(f"Combined data has {len(combined_data)} rows")
     print(
