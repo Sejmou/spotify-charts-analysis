@@ -1,5 +1,7 @@
 """
 A hacky script to execute commands stored in .sql files on ClickHouse DB, optionally replacing strings in the SQL file before execution.
+
+key-value pair parsing for string replacement functionality stolen from https://stackoverflow.com/a/52014520/13727176
 """
 import argparse
 import clickhouse_connect

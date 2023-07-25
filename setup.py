@@ -20,6 +20,11 @@ setup(
         "spotipy",
         "aiohttp",
         "pytest",
+        # for connecting to ClickHouse
+        "clickhouse_connect",
+        # for running ClickHouse SQL queries in Jupyter notebooks
+        "jupyter-sql",
+        "clickhouse-sqlalchemy",
     ],
     packages=find_packages(),
     classifiers=[
