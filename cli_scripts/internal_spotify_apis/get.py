@@ -42,7 +42,10 @@ from helpers.util import (
     split_into_chunks_of_size,
     append_line_to_file,
 )
-from helpers.scraping import internal_api_endpoints, InternalRequestHeadersGetter
+from helpers.internal_spotify_apis import (
+    internal_api_endpoints,
+    InternalRequestHeadersGetter,
+)
 
 
 async def get_data(
@@ -288,6 +291,9 @@ def get_existing_track_ids(jsonl_file_path: str):
     Returns a set of track IDs that are already contained in the JSONL file, reading the IDs from the 'trackId' field of each JSON in each line.
     """
     df = pd.read_json(jsonl_file_path, lines=True)
+    df = df[
+        df.timestamp.notna()
+    ]  # filter out rows without timestamp (from runs with older versions of the script)
     if df.shape[0] == 0:
         # file is empty
         return set()
