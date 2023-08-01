@@ -1,8 +1,8 @@
 """
-Combines the functionality of all the other scripts in this directory, applying each of them one after the other.
+This script uses the Spotify API to fetch information about Spotify tracks (identified by their Spotify IDs) and related artists and albums.
 
-I.e., it first fetches track metadata, then album metadata for every album in the track metadata,
-then artist metadata for every artist in the album metadata AND track metadata (artists can be album artists, but not track artists).
+i.e., it first fetches track metadata, then album metadata for every album in the track metadata,
+and finally artist metadata for every artist in the album metadata AND track metadata (as track artists and album artists needn't necessarily be the same).
 
 """
 import argparse
@@ -54,7 +54,7 @@ if __name__ == "__main__":
         "-o",
         "--output_dir",
         type=str,
-        help="Path to a directory where output files with the Spotify API will be written to (in a subdirectory).",
+        help="Path to a directory where output files with the Spotify API will be written to (in subdirectories).",
         required=True,
     )
     args = parser.parse_args()

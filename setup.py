@@ -25,6 +25,7 @@ setup(
         # for running ClickHouse SQL queries in Jupyter notebooks
         "jupyter-sql",
         "clickhouse-sqlalchemy",
+        "neo4j",
     ],
     packages=find_packages(),
     classifiers=[
