@@ -3,12 +3,16 @@ from tqdm import tqdm
 import spotipy
 from typing import List
 from helpers.util import split_into_chunks_of_size
+from helpers.spotify_util import create_spotipy_data_provenance_info_dict
 
 
 def get_artist_metadata_from_api(artist_ids: list, spotify: spotipy.Spotify):
     artist_genres = []  # tuples of shape ('artist_id', 'genre')
     artist_images = []  # tuples of shape ('artist_id', 'url', 'width', 'height')
     metadata = []  # list of dictionaries for all remaining artist metadata
+    original_responses = (
+        []
+    )  # list of original API responses, with added 'timestamp' and 'source' fields
 
     chunk_size = (
         50  # maximum number of artist IDs that can be fetched in a single API call
@@ -19,6 +23,11 @@ def get_artist_metadata_from_api(artist_ids: list, spotify: spotipy.Spotify):
     with tqdm(total=len(artist_ids_chunks)) as pbar:
         for artist_ids in artist_ids_chunks:
             api_resp = spotify.artists(artist_ids)["artists"]
+            original_responses.append(
+                create_spotipy_data_provenance_info_dict(
+                    response=api_resp, client_method_name="artists"
+                )
+            )
             for artist_data in api_resp:
                 if artist_data is None:
                     raise ValueError(
@@ -30,7 +39,7 @@ def get_artist_metadata_from_api(artist_ids: list, spotify: spotipy.Spotify):
                     _process_img_data(artist_id, artist_data["images"])
                 )
                 metadata.append(_process_remaining_data(artist_data))
-                pbar.update(1)
+            pbar.update(1)
 
     df_dict = {}
 
@@ -44,6 +53,8 @@ def get_artist_metadata_from_api(artist_ids: list, spotify: spotipy.Spotify):
         artist_images, columns=["artist_id", "url", "width", "height"]
     )
     df_dict["images"].set_index("artist_id", inplace=True)
+
+    df_dict["original_responses"] = pd.DataFrame(original_responses)
 
     return df_dict
 

@@ -3,6 +3,9 @@ from spotipy import Spotify
 import os
 import inquirer
 from dotenv import load_dotenv
+import spotipy
+from datetime import datetime
+import subprocess
 
 client_id, client_secret = None, None
 
@@ -40,6 +43,27 @@ def create_spotipy_client():
     return Spotify(
         client_credentials_manager=SpotifyClientCredentials(client_id, client_secret)
     )
+
+
+def create_spotipy_data_provenance_info_dict(response: dict, client_method_name: str):
+    return {
+        "source": f"Spotify API (spotipy v{SPOTIFY_VERSION}, client method: '{client_method_name}')",
+        "content": response,
+        "timestamp": datetime.utcnow(),
+    }
+
+
+def get_spotipy_version():
+    # https://stackoverflow.com/a/7353141/13727176
+    p1 = subprocess.Popen(["pip", "show", "spotipy"], stdout=subprocess.PIPE)
+    p2 = subprocess.Popen(["grep", "Version"], stdin=p1.stdout, stdout=subprocess.PIPE)
+    p1.stdout.close()  # Allow p1 to receive a SIGPIPE if p2 exits.
+    output, err = p2.communicate()
+    version_str = output.decode("utf-8").split("Version: ")[-1].strip()
+    return version_str
+
+
+SPOTIFY_VERSION = get_spotipy_version()
 
 
 def get_spotify_track_link(id: str):

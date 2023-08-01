@@ -55,7 +55,16 @@ if __name__ == "__main__":
         "--output_dir",
         type=str,
         help="Path to a directory where output files with the Spotify API will be written to (in subdirectories).",
-        required=True,
     )
     args = parser.parse_args()
-    main(chart_file_path=args.input_path, output_dir=args.output_dir)
+    chart_file_path = args.input_path
+    if not chart_file_path.endswith(".parquet"):
+        raise ValueError(
+            f"Expected input path to end with '.parquet', but got '{chart_file_path}'"
+        )
+    output_dir = args.output_dir or os.path.dirname(chart_file_path)
+    print(f"Will write to output directory '{output_dir}'")
+    main(
+        chart_file_path=chart_file_path,
+        output_dir=output_dir,
+    )

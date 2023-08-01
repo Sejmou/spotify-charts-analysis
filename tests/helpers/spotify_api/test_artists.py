@@ -17,10 +17,12 @@ def test_get_artist_metadata():
         artist_ids=[example_artist_id, example_artist_id], spotify=spotify
     )
     assert isinstance(dfs, dict)
-    assert dfs.keys() == {"metadata", "images", "genres"}
+    assert dfs.keys() == {"metadata", "images", "genres", "original_responses"}
     for df_name, df in dfs.items():
         assert isinstance(df, pd.DataFrame), f"{df_name} is not a DataFrame"
         assert not df.empty, f"{df_name} is empty"
+        if df_name == "original_responses":
+            continue
         assert df.index.name == "artist_id", f"{df_name} index is not 'artist_id'"
         if df_name == "metadata":
             assert df.shape[0] == 2

@@ -20,10 +20,19 @@ def test_get_album_metadata_from_api():
         album_ids=[example_album_id, example_album_id], spotify=spotify
     )
     assert isinstance(dfs, dict)
-    assert dfs.keys() == {"metadata", "images", "artists", "markets", "copyrights"}
+    assert dfs.keys() == {
+        "metadata",
+        "images",
+        "artists",
+        "markets",
+        "copyrights",
+        "original_responses",
+    }
     for df_name, df in dfs.items():
         assert isinstance(df, pd.DataFrame), f"{df_name} is not a DataFrame"
         assert not df.empty, f"{df_name} is empty"
+        if df_name == "original_responses":
+            continue
         assert df.index.name == "album_id", f"{df_name} index is not 'album_id'"
         if df_name == "metadata":
             assert df.shape[0] == 2

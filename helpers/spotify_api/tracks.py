@@ -3,6 +3,7 @@ from tqdm import tqdm
 import spotipy
 from typing import List
 from helpers.util import split_into_chunks_of_size
+from helpers.spotify_util import create_spotipy_data_provenance_info_dict
 
 
 def get_track_metadata_from_api(track_ids: List[str], spotify: spotipy.Spotify):
@@ -11,6 +12,9 @@ def get_track_metadata_from_api(track_ids: List[str], spotify: spotipy.Spotify):
     metadata = (
         []
     )  # list of dictionaries for all remaining track metadata (excluding artists and markets)
+    original_responses = (
+        []
+    )  # list of original API responses, with added 'timestamp' and 'source' fields
 
     chunk_size = 50
     track_ids_chunks = split_into_chunks_of_size(track_ids, chunk_size)
@@ -19,6 +23,11 @@ def get_track_metadata_from_api(track_ids: List[str], spotify: spotipy.Spotify):
     with tqdm(total=len(track_ids_chunks)) as pbar:
         for track_ids in track_ids_chunks:
             api_resp = spotify.tracks(track_ids)["tracks"]
+            original_responses.append(
+                create_spotipy_data_provenance_info_dict(
+                    response=api_resp, client_method_name="tracks"
+                )
+            )
             for track_data in api_resp:
                 track_id = track_data["id"]
                 artists.extend(_process_artists(track_id, track_data["artists"]))
@@ -26,7 +35,7 @@ def get_track_metadata_from_api(track_ids: List[str], spotify: spotipy.Spotify):
                     _process_markets(track_id, track_data["available_markets"])
                 )
                 metadata.append(_process_remaining_data(track_data))
-                pbar.update(1)
+            pbar.update(1)
 
     df_dict = {}
 
@@ -38,6 +47,8 @@ def get_track_metadata_from_api(track_ids: List[str], spotify: spotipy.Spotify):
 
     df_dict["markets"] = pd.DataFrame(markets, columns=["track_id", "market"])
     df_dict["markets"].set_index("track_id", inplace=True)
+
+    df_dict["original_responses"] = pd.DataFrame(original_responses)
 
     return df_dict
 

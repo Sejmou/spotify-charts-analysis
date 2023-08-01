@@ -18,10 +18,12 @@ def test_get_track_metadata():
         spotify=spotify,
     )
     assert isinstance(dfs, dict)
-    assert dfs.keys() == {"metadata", "artists", "markets"}
+    assert dfs.keys() == {"metadata", "artists", "markets", "original_responses"}
     for df_name, df in dfs.items():
         assert isinstance(df, pd.DataFrame), f"{df_name} is not a DataFrame"
         assert not df.empty, f"{df_name} is empty"
+        if df_name == "original_responses":
+            continue
         assert df.index.name == "track_id", f"{df_name} index is not 'track_id'"
         if df_name == "metadata":
             assert df.shape[0] == 2

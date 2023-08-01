@@ -3,6 +3,7 @@ from tqdm import tqdm
 import spotipy
 from typing import List
 from helpers.util import split_into_chunks_of_size
+from helpers.spotify_util import create_spotipy_data_provenance_info_dict
 
 
 def get_album_metadata_from_api(album_ids: list, spotify: spotipy.Spotify):
@@ -15,10 +16,18 @@ def get_album_metadata_from_api(album_ids: list, spotify: spotipy.Spotify):
     markets = []  # tuples of shape ('album_id', 'market')
     copyrights = []  # tuples of shape ('album_id', 'text', 'type')
     metadata = []  # list of dictionaries for all remaining album metadata
+    original_responses = (
+        []
+    )  # list of original API responses, with added 'timestamp' and 'source' fields
 
     with tqdm(total=len(album_ids_chunks)) as pbar:
         for album_ids in album_ids_chunks:
             api_resp = spotify.albums(album_ids)["albums"]
+            original_responses.append(
+                create_spotipy_data_provenance_info_dict(
+                    response=api_resp, client_method_name="albums"
+                )
+            )
             for album_data in api_resp:
                 if album_data is None:
                     raise ValueError(
@@ -64,6 +73,8 @@ def get_album_metadata_from_api(album_ids: list, spotify: spotipy.Spotify):
         columns=["album_id", "text", "type"],
     )
     df_dict["copyrights"].set_index("album_id", inplace=True)
+
+    df_dict["original_responses"] = pd.DataFrame(original_responses)
 
     return df_dict
 
