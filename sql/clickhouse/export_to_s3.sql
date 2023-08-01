@@ -1,6 +1,6 @@
 INSERT INTO
     FUNCTION s3(
-        'https://s3.eu-central-2.wasabisys.com/spotifycharts/top200.parquet',
+        'https://s3.eu-central-2.wasabisys.com/spotifycharts/tableName.parquet',
         -- replace with actual key
         's3_key',
         -- replace with actual secret
@@ -10,6 +10,4 @@ INSERT INTO
 SELECT
     *
 FROM
-    top200
-LIMIT
-    10000;
+    tableName;
