@@ -138,7 +138,7 @@ def _process_remaining_data(data: dict):
             data[f"{source}_url"] = url
 
     for platform, p_id in data["external_ids"].items():
-        data[f"{platform}_url"] = p_id
+        data[f"{platform}_id"] = p_id
 
     data["release_date"] = pd.to_datetime(data["release_date"])
 

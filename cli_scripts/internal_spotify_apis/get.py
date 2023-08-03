@@ -288,12 +288,9 @@ def process_response_dict(result: dict, output_path: str, error_log_path: str):
 
 def get_existing_track_ids(jsonl_file_path: str):
     """
-    Returns a set of track IDs that are already contained in the JSONL file, reading the IDs from the 'trackId' field of each JSON in each line.
+    Returns a set of track IDs that are already contained in the JSONL file.
     """
     df = pd.read_json(jsonl_file_path, lines=True)
-    df = df[
-        df.timestamp.notna()
-    ]  # filter out rows without timestamp (from runs with older versions of the script)
     if df.shape[0] == 0:
         # file is empty
         return set()

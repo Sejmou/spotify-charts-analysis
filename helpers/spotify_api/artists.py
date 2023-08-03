@@ -107,6 +107,7 @@ def _process_remaining_data(
         "external_urls",  # already processed
         "images",  # already processed
         "genres",  # already processed
+        "popularity",  # pretty arbitrary metric (how is it even computed?), also constantly changing
     ]
 
     # rename id to artist_id
