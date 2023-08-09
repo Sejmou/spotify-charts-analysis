@@ -1,7 +1,7 @@
--- Creates database and table for spotify_charts
-CREATE DATABASE IF NOT EXISTS spotify_charts;
+-- Creates database and tables for chart dataset
+CREATE DATABASE IF NOT EXISTS charts;
 
-USE spotify_charts;
+USE charts;
 
 CREATE TABLE IF NOT EXISTS top200 (
   `track_id` FixedString(22),
@@ -9,6 +9,7 @@ CREATE TABLE IF NOT EXISTS top200 (
   `pos` UInt8,
   `streams` UInt32,
   `date` Date
-) ENGINE = MergeTree() PRIMARY KEY (date, region_code, track_id);
+) ENGINE = MergeTree() -- The primary key is also the sorting key, so the data is sorted by date, region_code, track_id
+PRIMARY KEY (date, region_code, track_id);
 
--- The primary key is also the sorting key, so the data is sorted by date, region_code, track_id
+-- TODO: add other tables

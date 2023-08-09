@@ -25,6 +25,9 @@ setup(
         # for running ClickHouse SQL queries in Jupyter notebooks
         "jupyter-sql",
         "clickhouse-sqlalchemy",
+        # for connecting to PostgreSQL
+        "psycopg2-binary",
+        # neo4j
         "neo4j",
     ],
     packages=find_packages(),
