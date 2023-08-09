@@ -20,7 +20,6 @@ from helpers.scraping import (
     login_and_accept_cookies,
 )
 from helpers.data import create_data_path
-from helpers.util import split_into_chunks_of_size
 from datetime import datetime, timedelta
 import argparse
 import multiprocessing
@@ -33,8 +32,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 import time
 import pandas as pd
-import threading
-import random
+
 
 MAX_QUEUE_SIZE = 32767  # size limit for queues in MacOS X https://stackoverflow.com/a/56379621/13727176 - when trying to add more values to the queue (via .put() in a for loop), the code would hang
 # processed_urls = 0  # number of items processed by the worker processes
@@ -183,9 +181,7 @@ def worker(
         url_processed = False
         while not url_processed:
             try:
-                start_time = time.time()
                 download_region_chart_csv(driver, url, download_path)
-                duration = time.time() - start_time
 
                 while True:
                     # Wait until the number of pending downloads is less than the number of workers
@@ -365,10 +361,18 @@ def create_chart_filename(region_code: str, date: str):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "-s", "--start_date", type=str, help="Start date (YYYY-MM-DD)", required=True
+        "-s",
+        "--start_date",
+        type=str,
+        help="Start date (YYYY-MM-DD)",
+        default="2017-01-01",
     )
     parser.add_argument(
-        "-e", "--end_date", type=str, help="End date (YYYY-MM-DD)", required=True
+        "-e",
+        "--end_date",
+        type=str,
+        help="End date (YYYY-MM-DD)",
+        default=datetime.today().strftime("%Y-%m-%d"),
     )
     parser.add_argument(
         "-r",
@@ -384,7 +388,7 @@ if __name__ == "__main__":
         "-o",
         "--output_dir",
         type=str,
-        help="Absolute path to directory where charts will be downloaded to",
+        help="Path to directory where charts will be downloaded to",
         default=create_data_path("scraper_downloads"),
     )
     parser.add_argument(
@@ -405,6 +409,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     date_strs = generate_date_strings(args.start_date, args.end_date)
+    print(f"Fetching data for date range [{args.start_date}, {args.end_date}]")
     print(f"processing {len(date_strs)} dates")
 
     if args.region_codes == all_regions_and_codes_csv_path:
@@ -426,7 +431,7 @@ if __name__ == "__main__":
         f"processing {len(regions_and_dates)} charts (combinations of regions and dates)"
     )
 
-    download_dir = args.output_dir
+    download_dir = os.path.join(os.getcwd(), args.output_dir)
     print(f"Using '{download_dir}' as download directory")
     if not os.path.isdir(download_dir):
         os.makedirs(download_dir)
