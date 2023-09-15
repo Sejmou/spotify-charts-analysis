@@ -29,8 +29,9 @@ setup(
         "psycopg2-binary",
         # neo4j
         "neo4j",
-        # for connecting to S3 Buckets
+        # for interacting with S3 storage
         "boto3",
+        "s3fs",
     ],
     packages=find_packages(),
     classifiers=[

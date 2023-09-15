@@ -11,9 +11,8 @@ import boto3
 from dotenv import load_dotenv
 import argparse
 from tqdm import tqdm
-import zipfile
-from zipfile import ZipFile
-from io import BytesIO
+import s3fs
+from fsspec.callbacks import TqdmCallback
 
 
 def main(
@@ -23,79 +22,63 @@ def main(
     bucket_folder: str,
 ):
     """
-    Copies files from a local directory to an S3 bucket, using credentials stored in the .env file.
+    Copies local data to an S3 bucket, using credentials stored in the .env file.
 
-    If the provided path refers to a directory, the directory will be zipped and the zip file (named like the input directory) will be uploaded to the S3 bucket.
-    If the provided path refers to a file, the file will be uploaded as it is.
+    Args:
+        local_path (str): a local path to a directory or a file. If the path refers to a directory, the directory will be zipped and the zip file will be uploaded to the S3 bucket. If the path refers to a file, the file will be uploaded as it is.
+        endpoint_url (str): URL of the S3 bucket endpoint to which data should be copied.
+        bucket (str): name of the S3 bucket to which data should be copied.
+        bucket_folder (str): folder path in the S3 bucket to which data should be copied. Set to "" to copy to the root directory of the bucket.
     """
     # load credentials from .env file
     load_dotenv()
     wasabi_access_key = os.environ["WASABI_KEY_ID"]
     wasabi_secret_key = os.environ["WASABI_SECRET"]
 
-    # connect to S3 bucket
-    s3 = boto3.client(
-        "s3",
-        endpoint_url=endpoint_url,
-        aws_access_key_id=wasabi_access_key,
-        aws_secret_access_key=wasabi_secret_key,
-    )
-    print(f"Connected to S3 endpoint '{endpoint_url}'.")
-    print(
-        f"Copying files from local directory '{local_path}' to '{bucket_folder}' in S3 bucket '{bucket}'."
-    )
+    # check if local path is a directory or a file
+    dest_str = (
+        f"'{bucket_folder}' in" if bucket_folder != "" else "root dir of"
+    ) + f" S3 bucket '{bucket}'."
 
-    # copy all files from local directory to S3 bucket
-    # VERY slow if there are many small files
-    # for filename in tqdm(os.listdir(local_folder)):
-    #     res = s3.put_object(
-    #         Body=f"{local_folder}/{filename}",
-    #         Bucket=bucket,
-    #         Key=f"{bucket_folder}/{filename}",
-    #     )
-    #     if res["ResponseMetadata"]["HTTPStatusCode"] != 200:
-    #         print(
-    #             f"Failed to copy file '{filename}' to S3 bucket '{bucket}' with error code {res['ResponseMetadata']['HTTPStatusCode']}."
-    #         )
+    # a bit unfortunate, but we have to use different packages and logic for files and directories
+    if os.path.isdir(local_path):
+        print(f"Copying files from local directory '{local_path}' to " + dest_str)
 
-    files_to_zip = []
-
-    # Collect the list of files to zip
-    for root, _, files in os.walk(local_path):
-        for file in files:
-            file_path = os.path.join(root, file)
-            arcname = os.path.relpath(file_path, local_path)
-            files_to_zip.append((file_path, arcname))
-
-    # create zip file of local directory (in memory)
-    memory_zip = BytesIO()
-
-    # Create a ZipFile object using the in-memory byte stream
-    with zipfile.ZipFile(memory_zip, "w", zipfile.ZIP_DEFLATED) as zipf:
-        with tqdm(total=len(files_to_zip), desc="Zipping files", unit=" files") as pbar:
-            for file_path, arcname in files_to_zip:
-                zipf.write(file_path, arcname=arcname)
-                pbar.update(1)
-
-    # Now you have the zip data in memory. You can access it using memory_zip.getvalue()
-    zip_data = memory_zip.getvalue()
-    file_size = len(zip_data)
-    print("Files zipped (total size: {:.2f} MB).".format(file_size / 1024**2))
-
-    print("Uploading zip file to S3 bucket...")
-
-    # upload zip file to S3 bucket
-    res = s3.put_object(
-        Body=zip_data,
-        Bucket=bucket,
-        Key=f"{bucket_folder}/{local_path.split(os.sep)[-1]}.zip",
-    )
-
-    if res["ResponseMetadata"]["HTTPStatusCode"] != 200:
-        print(
-            f"Failed to copy file '{local_path}' to S3 bucket '{bucket}' with error code {res['ResponseMetadata']['HTTPStatusCode']}."
+        s3_files = s3fs.S3FileSystem(
+            endpoint_url=endpoint_url,
+            key=wasabi_access_key,
+            secret=wasabi_secret_key,
         )
 
+        s3_files.put(
+            lpath=local_path,
+            rpath=f"{bucket}/{bucket_folder}",
+            recursive=True,
+            callback=TqdmCallback(),
+        )
+    elif os.path.isfile(local_path):
+        print(f"Copying file '{local_path}' to " + dest_str)
+        s3 = boto3.client(
+            "s3",
+            aws_access_key_id=wasabi_access_key,
+            aws_secret_access_key=wasabi_secret_key,
+            endpoint_url=endpoint_url,
+        )
+
+        file_size = os.path.getsize(local_path)  # in bytes
+        filename = local_path.split(os.path.sep)[
+            -1
+        ]  # actual filename, Filename param is actually a local path lol
+        key = (
+            bucket_folder + "/" + filename if bucket_folder != "" else filename
+        )  # key is the path in the bucket
+        with tqdm(total=file_size, unit="B", unit_scale=True, desc=filename) as pbar:
+            s3.upload_file(
+                Filename=local_path,
+                Bucket=bucket,
+                Key=key,
+                Callback=lambda bytes_transferred: pbar.update(bytes_transferred),
+            )
     print("Done.")
 
 
@@ -105,14 +88,14 @@ if __name__ == "__main__":
         "--input_path",
         "-i",
         type=str,
-        help="Path to the local directory containing the csv files that should be copied to the S3 bucket.",
+        help="Path to local data (file or directory containing files) that should be copied to the S3 bucket.",
         required=True,
     )
     parser.add_argument(
         "--bucket",
         "-b",
         type=str,
-        help="Name of the S3 bucket to which the files should be copied.",
+        help="Name of the S3 bucket to which the data should be copied.",
         required=True,
     )
     parser.add_argument(
@@ -126,8 +109,8 @@ if __name__ == "__main__":
         "--bucket_folder",
         "-f",
         type=str,
-        help="Name of the folder in the S3 bucket to which the files should be copied.",
-        required=True,
+        help="Path to the folder in the S3 bucket to which data should be copied.",
+        default="",
     )
     args = parser.parse_args()
 
